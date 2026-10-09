@@ -1,7 +1,9 @@
 //! Throwaway recon tooling. See README.md.
 
+mod compact;
 mod db;
 mod handle;
+mod more;
 mod net;
 mod plc;
 mod verify;
@@ -70,6 +72,31 @@ enum Cmd {
         #[arg(long)]
         sample: String,
     },
+    /// Build compact-encoded copies of accounts and history (design §4.5).
+    Compact,
+    /// Fetch the document of every did:web DID recon has seen.
+    DidwebFetch,
+    /// Compare stored state and history with the directory's audit log.
+    AuditCompare {
+        #[arg(long, default_value = "https://plc.directory")]
+        plc_url: String,
+        #[arg(long, default_value_t = 200)]
+        random: i64,
+        #[arg(long, default_value_t = 100)]
+        forks: i64,
+    },
+    /// For live identity events, check the handle at once and again later.
+    EventLag {
+        #[arg(long, default_value = "wss://jetstream.us-east.bsky.network")]
+        base: String,
+        #[arg(long, default_value = "https://plc.directory")]
+        plc_url: String,
+        #[arg(long)]
+        seconds: u64,
+        /// Take at most one event per this many milliseconds.
+        #[arg(long, default_value_t = 1000)]
+        min_gap_ms: u64,
+    },
     /// Count handle claims per registrable domain from the loaded accounts.
     DomainCounts,
     /// Draw a sample of handle claims, capped per registrable domain.
@@ -135,6 +162,7 @@ async fn main() -> Result<()> {
             db::init(&client).await?;
             net::init(&client).await?;
             verify::init(&client).await?;
+            more::init(&client).await?;
         }
         Cmd::PlcBackfill { plc_url, count, min_interval_ms, window_hours, metrics, metrics_every, max_pages } => {
             let opts = plc::Opts {
@@ -155,6 +183,17 @@ async fn main() -> Result<()> {
         Cmd::JetstreamLive { base, kinds, seconds, metrics, sample } => {
             let o = net::LiveOpts { base, user_agent: cli.user_agent, kinds, seconds, metrics_path: metrics, sample_path: sample };
             net::jetstream_live(&client, o).await?;
+        }
+        Cmd::Compact => {
+            let writer = db::connect(&cli.database_url).await?;
+            compact::build(&client, &writer).await?;
+        }
+        Cmd::DidwebFetch => more::didweb_fetch(std::sync::Arc::new(client), &cli.user_agent).await?,
+        Cmd::AuditCompare { plc_url, random, forks } => {
+            more::audit_compare(&client, &plc_url, &cli.user_agent, random, forks).await?;
+        }
+        Cmd::EventLag { base, plc_url, seconds, min_gap_ms } => {
+            more::event_lag(std::sync::Arc::new(client), &base, &plc_url, &cli.user_agent, seconds, min_gap_ms).await?;
         }
         Cmd::DomainCounts => verify::domain_counts(&client).await?,
         Cmd::SampleBuild { run, percent, per_domain_cap, target } => {

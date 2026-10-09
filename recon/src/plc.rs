@@ -147,6 +147,13 @@ fn derive(op: &Value, c: &mut Counters) -> (Kind, Option<String>, Option<String>
     }
 }
 
+/// The same derivation for other recon jobs: (is tombstone, handle, PDS, key).
+pub fn derive_public(op: &Value) -> (bool, Option<String>, Option<String>, Option<String>) {
+    let mut c = Counters::default();
+    let (kind, h, p, k) = derive(op, &mut c);
+    (kind == Kind::Tombstone, h, p, k)
+}
+
 fn parse_page(body: &str, c: &mut Counters) -> Result<Vec<Line>> {
     let mut out = Vec::with_capacity(1000);
     for l in body.lines() {

@@ -90,6 +90,14 @@ async fn connect(
     Ok(ws)
 }
 
+pub type Events = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Open a subscription for other recon jobs.
+pub async fn connect_events(base: &str, user_agent: &str, kinds: &[String], cursor: Option<&str>) -> Result<Events> {
+    let url = ws_url(base, kinds, cursor);
+    connect(&url, user_agent).await.map_err(|e| anyhow::anyhow!(describe_refusal(&e)))
+}
+
 fn describe_refusal(e: &WsError) -> String {
     match e {
         WsError::Http(resp) => {
