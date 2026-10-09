@@ -89,6 +89,9 @@ enum Cmd {
         after: u64,
         #[arg(long)]
         out: String,
+        /// Plan with no kinds filter at all (every event kind).
+        #[arg(long)]
+        all_kinds: bool,
         /// Read each block-mode segment's index to get exact block sizes.
         #[arg(long)]
         exact_blocks: bool,
@@ -103,6 +106,9 @@ enum Cmd {
         after: u64,
         #[arg(long)]
         out: String,
+        /// Run with no kinds filter and collect DIDs from every row.
+        #[arg(long)]
+        all_kinds: bool,
         /// Stop after downloading this many bytes. 0 means no limit.
         #[arg(long)]
         max_bytes: u64,
@@ -220,10 +226,12 @@ async fn main() -> Result<()> {
             net::jetstream_live(&client, o).await?;
         }
         Cmd::JssInspect { path } => jss::inspect(&path)?,
-        Cmd::ReplayPlan { base, kinds, after, out, exact_blocks } => {
+        Cmd::ReplayPlan { base, kinds, after, out, all_kinds, exact_blocks } => {
+            let kinds = if all_kinds { Vec::new() } else { kinds };
             replay::plan(&base, &cli.user_agent, kinds, after, &out, exact_blocks).await?;
         }
-        Cmd::ReplayRun { base, kinds, after, out, max_bytes } => {
+        Cmd::ReplayRun { base, kinds, after, out, all_kinds, max_bytes } => {
+            let kinds = if all_kinds { Vec::new() } else { kinds };
             replay::run(&client, &base, &cli.user_agent, kinds, after, &out, max_bytes).await?;
         }
         Cmd::Compact => {

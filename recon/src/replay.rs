@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS recon_replay_dids (
     first_seq bigint NOT NULL,
     last_seq  bigint NOT NULL,
     identity  integer NOT NULL,
-    account   integer NOT NULL
+    account   integer NOT NULL,
+    other     integer NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS recon_replay_units (
     segment     text NOT NULL,
@@ -91,7 +92,8 @@ impl Api {
     }
 
     async fn plan_page(&self, kinds: &[String], after: u64, before: Option<u64>) -> Result<Value> {
-        let mut body = json!({"kinds": kinds, "afterSeq": after});
+        // An empty kinds list means an unfiltered plan: omit the field.
+        let mut body = if kinds.is_empty() { json!({"afterSeq": after}) } else { json!({"kinds": kinds, "afterSeq": after}) };
         if let Some(b) = before {
             body["beforeSeq"] = json!(b);
         }
@@ -244,6 +246,7 @@ struct Agg {
     last: u64,
     identity: i32,
     account: i32,
+    other: i32,
 }
 
 /// Download and decode the planned units, recording every DID seen on an
@@ -255,6 +258,10 @@ pub async fn run(client: &Client, base: &str, user_agent: &str, kinds: Vec<Strin
     let (tip, units) = full_plan(&api, &kinds, after, &mut out).await?;
     let started = Instant::now();
     let mut spent = 0u64;
+    let all_rows = kinds.is_empty();
+    client
+        .batch_execute("ALTER TABLE recon_replay_dids ADD COLUMN IF NOT EXISTS other integer NOT NULL DEFAULT 0")
+        .await?;
     let mut dids: HashMap<String, Agg> = HashMap::new();
     let mut done_units = 0u64;
 
@@ -310,9 +317,11 @@ pub async fn run(client: &Client, base: &str, user_agent: &str, kinds: Vec<Strin
                 let is_acct = r.kind == jss::KIND_ACCOUNT;
                 if !is_ident && !is_acct {
                     other += 1;
-                    return;
-                }
-                if is_ident {
+                    // An unfiltered run also collects DIDs from every other row.
+                    if !all_rows || r.did.is_empty() {
+                        return;
+                    }
+                } else if is_ident {
                     ident += 1;
                     if let Ok(m) = jss::parse_marker(r.payload) {
                         if m.handle.is_some() {
@@ -330,8 +339,10 @@ pub async fn run(client: &Client, base: &str, user_agent: &str, kinds: Vec<Strin
                 a.last = r.seq;
                 if is_ident {
                     a.identity += 1;
-                } else {
+                } else if is_acct {
                     a.account += 1;
+                } else {
+                    a.other += 1;
                 }
             })?;
             client
@@ -369,14 +380,16 @@ async fn flush(client: &Client, dids: &mut HashMap<String, Agg>) -> Result<()> {
         let l: Vec<i64> = chunk.iter().map(|x| x.1.last as i64).collect();
         let i: Vec<i32> = chunk.iter().map(|x| x.1.identity).collect();
         let a: Vec<i32> = chunk.iter().map(|x| x.1.account).collect();
+        let o: Vec<i32> = chunk.iter().map(|x| x.1.other).collect();
         client
             .execute(
-                "INSERT INTO recon_replay_dids (did, first_seq, last_seq, identity, account) \
-                 SELECT a, b, c, d, e FROM UNNEST($1::text[], $2::int8[], $3::int8[], $4::int4[], $5::int4[]) AS t(a, b, c, d, e) \
+                "INSERT INTO recon_replay_dids (did, first_seq, last_seq, identity, account, other) \
+                 SELECT a, b, c, d, e, f FROM UNNEST($1::text[], $2::int8[], $3::int8[], $4::int4[], $5::int4[], $6::int4[]) AS t(a, b, c, d, e, f) \
                  ON CONFLICT (did) DO UPDATE SET first_seq = LEAST(recon_replay_dids.first_seq, EXCLUDED.first_seq), \
                      last_seq = GREATEST(recon_replay_dids.last_seq, EXCLUDED.last_seq), \
-                     identity = recon_replay_dids.identity + EXCLUDED.identity, account = recon_replay_dids.account + EXCLUDED.account",
-                &[&d, &f, &l, &i, &a],
+                     identity = recon_replay_dids.identity + EXCLUDED.identity, account = recon_replay_dids.account + EXCLUDED.account, \
+                     other = recon_replay_dids.other + EXCLUDED.other",
+                &[&d, &f, &l, &i, &a, &o],
             )
             .await?;
     }
