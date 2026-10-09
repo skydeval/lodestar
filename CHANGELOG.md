@@ -32,4 +32,6 @@ Work towards 0.1.0.
   - Jetstream replay planner that sizes a replay before any download,
     for a plan limited to identity and account events or an
     unfiltered plan, and a downloader that records the DIDs found.
+  - Replay membership probe that asks the planner about individual
+    DIDs and confirms with a few of the planned blocks.
   - Scripts to build and run the tooling on the recon host.

@@ -151,6 +151,145 @@ impl Api {
     }
 }
 
+const PROBE_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS recon_replay_probe (
+    did            text NOT NULL,
+    source         text NOT NULL,
+    plan           text NOT NULL,
+    units          integer NOT NULL,
+    whole_segments integer NOT NULL,
+    blocks         integer NOT NULL,
+    truncated      boolean NOT NULL,
+    blocks_fetched integer NOT NULL,
+    found          boolean,
+    found_kinds    text,
+    bytes          bigint NOT NULL,
+    PRIMARY KEY (did, plan)
+);
+"#;
+
+/// Ask the planner whether the archive might hold rows for each DID, then
+/// fetch a few of the planned blocks to confirm. `found` is true when a row
+/// for the DID was read, false when every planned block was read and none
+/// held it, and null when the answer is still open.
+pub async fn probe_dids(
+    client: &Client,
+    base: &str,
+    user_agent: &str,
+    plc_sample: i64,
+    blocks_per_plan: u64,
+    max_bytes: u64,
+) -> Result<()> {
+    client.batch_execute(PROBE_TABLE).await?;
+    let api = Api::new(base, user_agent)?;
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for r in client
+        .query("SELECT did, min(source) FROM recon_didweb WHERE did LIKE 'did:web:%' GROUP BY did ORDER BY did", &[])
+        .await?
+    {
+        targets.push((r.get(0), r.get(1)));
+    }
+    for r in client
+        .query(
+            "SELECT did FROM accounts TABLESAMPLE BERNOULLI (0.05) WHERE method = 0 AND status = 0 ORDER BY md5(did) LIMIT $1",
+            &[&plc_sample],
+        )
+        .await?
+    {
+        targets.push((r.get(0), "plc-sample".to_owned()));
+    }
+    let filtered = vec!["identity".to_owned(), "account".to_owned()];
+    let mut spent = 0u64;
+    let mut done = 0u64;
+    'targets: for (did, source) in &targets {
+        for (label, kinds) in [("filtered", filtered.clone()), ("unfiltered", Vec::new())] {
+            let exists: i64 = client
+                .query_one("SELECT count(*) FROM recon_replay_probe WHERE did = $1 AND plan = $2", &[did, &label])
+                .await?
+                .get(0);
+            if exists > 0 {
+                continue;
+            }
+            let mut body = json!({"dids": [did], "afterSeq": 0});
+            if !kinds.is_empty() {
+                body["kinds"] = json!(kinds);
+            }
+            let url = format!("{}/xrpc/network.bsky.jetstream.planSnapshot", api.base);
+            let resp = api.send(api.http.post(&url).json(&body)).await?;
+            if !resp.status().is_success() {
+                bail!("planSnapshot status {} body {}", resp.status(), resp.text().await.unwrap_or_default());
+            }
+            let page: Value = resp.json().await?;
+            let tip = page.get("sealedTipSeq").and_then(Value::as_u64).unwrap_or(0);
+            let through = page.get("plannedThroughSeq").and_then(Value::as_u64).unwrap_or(0);
+            let units = page.get("segments").and_then(Value::as_array).cloned().unwrap_or_default();
+            let (mut whole, mut blocks) = (0i32, 0i32);
+            let mut wanted: Vec<(String, u64)> = Vec::new();
+            for u in &units {
+                let name = u.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
+                if u.get("mode").and_then(Value::as_str) == Some("segment") {
+                    whole += 1;
+                    continue;
+                }
+                for r in u.get("blocks").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    let (a, b) = (r.get("first").and_then(Value::as_u64).unwrap_or(0), r.get("last").and_then(Value::as_u64).unwrap_or(0));
+                    for i in a..=b {
+                        blocks += 1;
+                        wanted.push((name.clone(), i));
+                    }
+                }
+            }
+            let mut fetched = 0i32;
+            let mut bytes = 0u64;
+            let mut found = false;
+            let mut kinds_seen: Vec<u8> = Vec::new();
+            for (name, i) in wanted.iter().take(blocks_per_plan as usize) {
+                let frame = api.block(name, *i).await?;
+                bytes += frame.len() as u64;
+                fetched += 1;
+                let body = jss::decompress(&frame)?;
+                jss::for_each_row(&body, |r| {
+                    if r.did == did.as_bytes() {
+                        let wanted_kind = kinds.is_empty() || r.kind == jss::KIND_IDENTITY || r.kind == jss::KIND_ACCOUNT;
+                        if wanted_kind {
+                            found = true;
+                            if !kinds_seen.contains(&r.kind) {
+                                kinds_seen.push(r.kind);
+                            }
+                        }
+                    }
+                })?;
+                if found {
+                    break;
+                }
+            }
+            spent += bytes;
+            let answer: Option<bool> = if found {
+                Some(true)
+            } else if whole == 0 && through >= tip && fetched as usize == wanted.len() {
+                Some(false)
+            } else {
+                None
+            };
+            let kinds_text = kinds_seen.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",");
+            client
+                .execute(
+                    "INSERT INTO recon_replay_probe (did, source, plan, units, whole_segments, blocks, truncated, blocks_fetched, found, found_kinds, bytes) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING",
+                    &[did, source, &label, &(units.len() as i32), &whole, &blocks, &(through < tip), &fetched, &answer, &kinds_text, &(bytes as i64)],
+                )
+                .await?;
+            if max_bytes != 0 && spent >= max_bytes {
+                eprintln!("byte budget reached");
+                break 'targets;
+            }
+        }
+        done += 1;
+    }
+    println!("{}", json!({"targets": targets.len(), "probed": done, "bytes_downloaded": spent}));
+    Ok(())
+}
+
 /// Page the whole plan and write each page to `out`. Returns the units.
 async fn full_plan(api: &Api, kinds: &[String], after: u64, out: &mut std::fs::File) -> Result<(u64, Vec<Value>)> {
     let mut units = Vec::new();

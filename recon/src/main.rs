@@ -96,6 +96,20 @@ enum Cmd {
         #[arg(long)]
         exact_blocks: bool,
     },
+    /// Ask the planner about individual DIDs and confirm with a few blocks.
+    ReplayProbe {
+        #[arg(long, default_value = "https://jetstream.us-east.bsky.network")]
+        base: String,
+        /// Also probe this many randomly chosen active did:plc accounts.
+        #[arg(long, default_value_t = 100)]
+        plc_sample: i64,
+        /// Fetch at most this many planned blocks per DID per plan.
+        #[arg(long, default_value_t = 2)]
+        blocks_per_plan: u64,
+        /// Stop after downloading this many bytes.
+        #[arg(long, default_value_t = 50_000_000)]
+        max_bytes: u64,
+    },
     /// Download and decode a planned replay. Needs the API key and approval.
     ReplayRun {
         #[arg(long, default_value = "https://jetstream.us-east.bsky.network")]
@@ -229,6 +243,9 @@ async fn main() -> Result<()> {
         Cmd::ReplayPlan { base, kinds, after, out, all_kinds, exact_blocks } => {
             let kinds = if all_kinds { Vec::new() } else { kinds };
             replay::plan(&base, &cli.user_agent, kinds, after, &out, exact_blocks).await?;
+        }
+        Cmd::ReplayProbe { base, plc_sample, blocks_per_plan, max_bytes } => {
+            replay::probe_dids(&client, &base, &cli.user_agent, plc_sample, blocks_per_plan, max_bytes).await?;
         }
         Cmd::ReplayRun { base, kinds, after, out, all_kinds, max_bytes } => {
             let kinds = if all_kinds { Vec::new() } else { kinds };
