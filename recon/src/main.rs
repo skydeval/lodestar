@@ -3,9 +3,11 @@
 mod compact;
 mod db;
 mod handle;
+mod jss;
 mod more;
 mod net;
 mod plc;
+mod replay;
 mod verify;
 
 use std::time::Duration;
@@ -71,6 +73,39 @@ enum Cmd {
         metrics: String,
         #[arg(long)]
         sample: String,
+    },
+    /// Summarise a local archive segment or bare block frame.
+    JssInspect {
+        #[arg(long)]
+        path: String,
+    },
+    /// Size a Jetstream replay without downloading event data. Needs the API key.
+    ReplayPlan {
+        #[arg(long, default_value = "https://jetstream.us-east.bsky.network")]
+        base: String,
+        #[arg(long, value_delimiter = ',', default_value = "identity,account")]
+        kinds: Vec<String>,
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long)]
+        out: String,
+        /// Read each block-mode segment's index to get exact block sizes.
+        #[arg(long)]
+        exact_blocks: bool,
+    },
+    /// Download and decode a planned replay. Needs the API key and approval.
+    ReplayRun {
+        #[arg(long, default_value = "https://jetstream.us-east.bsky.network")]
+        base: String,
+        #[arg(long, value_delimiter = ',', default_value = "identity,account")]
+        kinds: Vec<String>,
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long)]
+        out: String,
+        /// Stop after downloading this many bytes. 0 means no limit.
+        #[arg(long)]
+        max_bytes: u64,
     },
     /// Build compact-encoded copies of accounts and history (design §4.5).
     Compact,
@@ -183,6 +218,13 @@ async fn main() -> Result<()> {
         Cmd::JetstreamLive { base, kinds, seconds, metrics, sample } => {
             let o = net::LiveOpts { base, user_agent: cli.user_agent, kinds, seconds, metrics_path: metrics, sample_path: sample };
             net::jetstream_live(&client, o).await?;
+        }
+        Cmd::JssInspect { path } => jss::inspect(&path)?,
+        Cmd::ReplayPlan { base, kinds, after, out, exact_blocks } => {
+            replay::plan(&base, &cli.user_agent, kinds, after, &out, exact_blocks).await?;
+        }
+        Cmd::ReplayRun { base, kinds, after, out, max_bytes } => {
+            replay::run(&client, &base, &cli.user_agent, kinds, after, &out, max_bytes).await?;
         }
         Cmd::Compact => {
             let writer = db::connect(&cli.database_url).await?;
