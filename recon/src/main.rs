@@ -74,6 +74,11 @@ enum Cmd {
         #[arg(long)]
         sample: String,
     },
+    /// Print a CID string in the directory's own base32 form.
+    CidNormalize {
+        #[arg(long)]
+        cid: String,
+    },
     /// Summarise a local archive segment or bare block frame.
     JssInspect {
         #[arg(long)]
@@ -239,6 +244,7 @@ async fn main() -> Result<()> {
             let o = net::LiveOpts { base, user_agent: cli.user_agent, kinds, seconds, metrics_path: metrics, sample_path: sample };
             net::jetstream_live(&client, o).await?;
         }
+        Cmd::CidNormalize { cid } => println!("{}", compact::normalize_cid(&cid)),
         Cmd::JssInspect { path } => jss::inspect(&path)?,
         Cmd::ReplayPlan { base, kinds, after, out, all_kinds, exact_blocks } => {
             let kinds = if all_kinds { Vec::new() } else { kinds };

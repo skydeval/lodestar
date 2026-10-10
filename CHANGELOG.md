@@ -35,3 +35,12 @@ Work towards 0.1.0.
   - Replay membership probe that asks the planner about individual
     DIDs and confirms with a few of the planned blocks.
   - Scripts to build and run the tooling on the recon host.
+  - SQL reports for the PLC backfill, relay walk, `did:web` documents,
+    replay probes, per-domain handle counts and audit comparison.
+
+### Fixed
+
+- Recon PLC backfill compared an operation's `prev` with the previous
+  operation's CID as text. The directory accepts a `prev` written in
+  base58btc as the same CID it publishes in base32, so 111 ordinary
+  updates were recorded as forks. CIDs are now compared by value.

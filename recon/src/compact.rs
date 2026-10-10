@@ -75,7 +75,40 @@ pub fn did_bytes(did: &str) -> Vec<u8> {
 
 /// did:key:z… → the multicodec-prefixed key bytes. None if it does not decode.
 pub fn key_bytes(key: &str) -> Option<Vec<u8>> {
-    let s = key.strip_prefix("did:key:z")?;
+    b58_decode(key.strip_prefix("did:key:z")?)
+}
+
+/// Lowercase RFC 4648 base32 without padding.
+pub fn b32_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len() * 8 / 5 + 1);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for b in data {
+        acc = (acc << 8) | *b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(B32[((acc >> bits) & 31) as usize] as char);
+        }
+        acc &= (1 << bits) - 1;
+    }
+    if bits > 0 {
+        out.push(B32[((acc << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+/// A CID string in the directory's own form: multibase base32 (`b…`).
+/// The directory accepts a `prev` written in base58btc (`z…`) as the same
+/// CID, so comparing the raw strings is wrong.
+pub fn normalize_cid(s: &str) -> String {
+    match s.strip_prefix('z').and_then(b58_decode) {
+        Some(bytes) => format!("b{}", b32_encode(&bytes)),
+        None => s.to_owned(),
+    }
+}
+
+/// Base58 (Bitcoin alphabet) to bytes.
+pub fn b58_decode(s: &str) -> Option<Vec<u8>> {
     let mut num: Vec<u8> = Vec::with_capacity(40); // big-endian base-256
     for c in s.bytes() {
         let mut carry = B58.iter().position(|x| *x == c)? as u32;

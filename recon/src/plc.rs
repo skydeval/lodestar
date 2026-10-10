@@ -178,7 +178,12 @@ fn parse_page(body: &str, c: &mut Counters) -> Result<Vec<Line>> {
         if v.get("nullified").is_some() {
             c.add("line.has_nullified_field", 1);
         }
-        let prev = op.get("prev").and_then(Value::as_str).map(str::to_owned);
+        let raw_prev = op.get("prev").and_then(Value::as_str);
+        if raw_prev.is_some_and(|p| !p.starts_with('b')) {
+            c.add("prev.not_base32", 1);
+        }
+        // Compare CIDs by value: the directory accepts other text encodings.
+        let prev = raw_prev.map(crate::compact::normalize_cid);
         let (kind, handle, pds, key) = derive(op, c);
         out.push(Line {
             did: did.to_owned(),

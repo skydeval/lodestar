@@ -181,7 +181,11 @@ pub async fn audit_compare(client: &Client, plc_url: &str, user_agent: &str, ran
     let http = reqwest::Client::builder().user_agent(user_agent.to_owned()).timeout(Duration::from_secs(30)).build()?;
     let mut targets: Vec<(String, &'static str)> = Vec::new();
     for r in client
-        .query("SELECT DISTINCT did FROM recon_forks ORDER BY md5(did) LIMIT $1", &[&forks])
+        .query(
+            "SELECT did FROM (SELECT did, count(*) AS n FROM recon_forks GROUP BY did) t \
+             ORDER BY (n > 20) DESC, md5(did) LIMIT $1",
+            &[&forks],
+        )
         .await?
     {
         targets.push((r.get(0), "fork"));
