@@ -37,6 +37,8 @@ Work towards 0.1.0.
   - Scripts to build and run the tooling on the recon host.
   - SQL reports for the PLC backfill, relay walk, `did:web` documents,
     replay probes, per-domain handle counts and audit comparison.
+  - A simulation of the first handle sweep that records table and
+    index growth, and a measure of what maintenance recovers.
 
 ### Fixed
 
