@@ -7,6 +7,7 @@ mod jss;
 mod more;
 mod net;
 mod plc;
+mod rate;
 mod replay;
 mod verify;
 
@@ -191,6 +192,22 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         only_results: Vec<String>,
     },
+    /// Check handles from a file at stepped rates, stopping at the first
+    /// refusal. Uses no database.
+    RateProbe {
+        /// File of handles, one per line. Each is asked once.
+        #[arg(long)]
+        handles: String,
+        /// Requests a second for each step, in order.
+        #[arg(long, value_delimiter = ',', default_value = "10,20,40")]
+        steps: Vec<u32>,
+        #[arg(long, default_value_t = 180)]
+        step_seconds: u64,
+        #[arg(long, default_value = "system")]
+        resolver: String,
+        #[arg(long, default_value_t = 400)]
+        max_in_flight: usize,
+    },
     /// Page a relay's host roster into recon_hosts.
     ListHosts {
         #[arg(long, default_value = "https://relay1.us-east.bsky.network")]
@@ -216,8 +233,13 @@ enum Cmd {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
+    if let Cmd::RateProbe { handles, steps, step_seconds, resolver, max_in_flight } = cli.cmd {
+        let o = rate::Opts { handles, steps, step_seconds, resolver, user_agent: cli.user_agent, max_in_flight };
+        return rate::probe(o).await;
+    }
     let mut client = db::connect(&cli.database_url).await?;
     match cli.cmd {
+        Cmd::RateProbe { .. } => unreachable!("handled before the database connection"),
         Cmd::InitDb => {
             db::init(&client).await?;
             net::init(&client).await?;

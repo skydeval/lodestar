@@ -41,6 +41,9 @@ Work towards 0.1.0.
     index growth, and a measure of what maintenance recovers.
   - Batch lookup timings for running the database under a memory
     cap.
+  - A rate probe that checks handles at stepped rates and stops at
+    the first refusal, with a build script for hosts older than the
+    recon host.
 
 ### Fixed
 
