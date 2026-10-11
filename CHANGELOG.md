@@ -39,6 +39,8 @@ Work towards 0.1.0.
     replay probes, per-domain handle counts and audit comparison.
   - A simulation of the first handle sweep that records table and
     index growth, and a measure of what maintenance recovers.
+  - Batch lookup timings for running the database under a memory
+    cap.
 
 ### Fixed
 
