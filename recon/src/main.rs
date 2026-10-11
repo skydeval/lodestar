@@ -198,15 +198,22 @@ enum Cmd {
         /// File of handles, one per line. Each is asked once.
         #[arg(long)]
         handles: String,
-        /// Requests a second for each step, in order.
+        /// Requests a second for each step, in order. `rate:seconds`
+        /// gives one step its own length.
         #[arg(long, value_delimiter = ',', default_value = "10,20,40")]
-        steps: Vec<u32>,
+        steps: Vec<String>,
         #[arg(long, default_value_t = 180)]
         step_seconds: u64,
         #[arg(long, default_value = "system")]
         resolver: String,
-        #[arg(long, default_value_t = 400)]
+        #[arg(long, default_value_t = 3000)]
         max_in_flight: usize,
+        /// Stop when the 95th percentile of recent answers passes this.
+        #[arg(long, default_value_t = 1000)]
+        slow_ms: u64,
+        /// Stop when the 95th percentile of recent DNS lookups passes this.
+        #[arg(long, default_value_t = 500)]
+        dns_slow_ms: u64,
     },
     /// Page a relay's host roster into recon_hosts.
     ListHosts {
@@ -233,8 +240,9 @@ enum Cmd {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    if let Cmd::RateProbe { handles, steps, step_seconds, resolver, max_in_flight } = cli.cmd {
-        let o = rate::Opts { handles, steps, step_seconds, resolver, user_agent: cli.user_agent, max_in_flight };
+    if let Cmd::RateProbe { handles, steps, step_seconds, resolver, max_in_flight, slow_ms, dns_slow_ms } = cli.cmd {
+        let steps = steps.iter().map(|s| rate::parse_step(s, step_seconds)).collect::<Result<Vec<_>>>()?;
+        let o = rate::Opts { handles, steps, resolver, user_agent: cli.user_agent, max_in_flight, slow_ms, dns_slow_ms };
         return rate::probe(o).await;
     }
     let mut client = db::connect(&cli.database_url).await?;

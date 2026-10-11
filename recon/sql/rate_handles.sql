@@ -3,7 +3,10 @@
 \pset tuples_only on
 \pset format unaligned
 
-SELECT DISTINCT handle_claim
-FROM accounts TABLESAMPLE SYSTEM (0.1)
-WHERE handle_claim LIKE '%.bsky.social'
-LIMIT 20000;
+SELECT handle_claim FROM (
+    SELECT DISTINCT handle_claim
+    FROM accounts TABLESAMPLE SYSTEM (3)
+    WHERE handle_claim LIKE '%.bsky.social'
+) AS h
+ORDER BY md5(handle_claim)
+LIMIT 1000000;
