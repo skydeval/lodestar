@@ -154,12 +154,20 @@ async fn source(app: &App) -> Result<(Value, bool)> {
     })
 }
 
+/// The columns of an account answer. An active claimant of a shared handle
+/// takes its handle status and check time from the handle's row.
 fn account_columns() -> String {
     format!(
-        "a.did, a.method, a.status, p.endpoint, a.signing_key, a.handle_claim, a.handle_status, \
-         to_char(a.handle_checked_at AT TIME ZONE 'UTC', {TS}), to_char(a.created_at AT TIME ZONE 'UTC', {TS})"
+        "a.did, a.method, a.status, p.endpoint, a.signing_key, a.handle_claim, \
+         CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_status \
+              WHEN s.did = a.did THEN 0::int2 WHEN s.did IS NOT NULL THEN 1::int2 ELSE s.outcome END, \
+         to_char(CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_checked_at ELSE s.checked_at END AT TIME ZONE 'UTC', {TS}), \
+         to_char(a.created_at AT TIME ZONE 'UTC', {TS})"
     )
 }
+
+/// The tables an account answer reads.
+const ACCOUNT_FROM: &str = "accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id LEFT JOIN shared_handles s ON s.handle = a.handle_claim";
 
 fn account_json(r: &Row) -> Value {
     let method: i16 = r.get(1);
@@ -204,7 +212,7 @@ async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Re
     let row = app
         .db()
         .query_opt(
-            &format!("SELECT {} FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id WHERE a.did = $1", account_columns()),
+            &format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1", account_columns()),
             &[&encoding::did_bytes(&did)],
         )
         .await?;
@@ -244,7 +252,7 @@ async fn post_accounts(State(app): State<Arc<App>>, Json(batch): Json<Batch>) ->
     let rows = app
         .db()
         .query(
-            &format!("SELECT {} FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id WHERE a.did = ANY($1)", account_columns()),
+            &format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = ANY($1)", account_columns()),
             &[&keys],
         )
         .await?;

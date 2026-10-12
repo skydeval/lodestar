@@ -51,6 +51,17 @@ Work towards 0.1.0.
   a day, or after 14 days if the handle was verified. A changed
   claim clears the old claim's failure state. `lodestar
   check-account` checks named accounts and stores the result.
+- The verification role, `lodestar verify`. It takes work from the
+  queue in priority order, checks each handle under a limiter (a
+  rate and an in-flight cap per registrable domain, global limits,
+  and a hold when a host asks to wait), applies the result, and
+  queues retries and confirming checks as they come due. A full
+  domain at the head of the queue does not hold up the rest.
+- Shared handles. A handle claimed by more than 100 identities is
+  resolved once into its own row, its claimants take their status
+  from that row, and a changed claim asks for the row to be
+  refreshed, at most once an hour. The API reads a claimant's
+  status from the row.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

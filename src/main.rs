@@ -106,6 +106,23 @@ enum Cmd {
         #[arg(long, default_value = "system")]
         resolver: String,
     },
+    /// The verification role: check handles. The only role that makes
+    /// requests to arbitrary hosts.
+    Verify {
+        /// `system`, or a resolver's address.
+        #[arg(long, env = "LODESTAR_RESOLVER", default_value = "system")]
+        resolver: String,
+        /// Database connections used to apply results.
+        #[arg(long, default_value_t = 8)]
+        connections: usize,
+        /// A handle claimed by more identities than this is resolved
+        /// once, for all of them. At most 254.
+        #[arg(long, default_value_t = 100)]
+        shared_threshold: u8,
+        /// A shared handle is refreshed early no more often than this.
+        #[arg(long, default_value_t = 60)]
+        shared_refresh_minutes: u64,
+    },
     /// The API role: serve lookups.
     Api {
         #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
@@ -185,6 +202,18 @@ async fn main() -> Result<()> {
             };
             drop(client);
             ingest::run(opts).await?;
+        }
+        Cmd::Verify { resolver, connections, shared_threshold, shared_refresh_minutes } => {
+            drop(client);
+            let opts = verify::worker::Opts {
+                database_url: cli.database_url,
+                user_agent: cli.user_agent,
+                resolver,
+                connections,
+                shared_threshold: shared_threshold.min(254),
+                early_refresh_floor: Duration::from_secs(shared_refresh_minutes * 60),
+            };
+            verify::worker::run(opts, ingest::stop_signal()).await?;
         }
         Cmd::Api { listen, connections, plc_fresh_seconds, max_batch } => {
             drop(client);

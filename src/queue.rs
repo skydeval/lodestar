@@ -13,6 +13,8 @@ pub const KIND_DOCUMENT: i16 = 1;
 pub const REASON_CLAIM: i16 = 10;
 pub const REASON_EVENT: i16 = 31;
 pub const REASON_WALK: i16 = 32;
+pub const REASON_RETRY: i16 = 40;
+pub const REASON_CONFIRM: i16 = 41;
 
 pub struct Item<'a> {
     pub did: &'a [u8],

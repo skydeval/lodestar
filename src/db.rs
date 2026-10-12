@@ -111,6 +111,22 @@ CREATE TABLE IF NOT EXISTS check_failures (
 -- The verification role reads this on a timer for what has come due.
 CREATE INDEX IF NOT EXISTS check_failures_next_attempt ON check_failures (next_attempt_at);
 
+-- A handle claimed by many identities, resolved once for all of them.
+-- Its claimants take their handle status from this row: verified if it
+-- names them, mismatch if it names another, else `outcome`.
+CREATE TABLE IF NOT EXISTS shared_handles (
+    checked_at       timestamptz,
+    first_failure_at timestamptz,
+    last_attempt_at  timestamptz,
+    next_attempt_at  timestamptz,
+    nothing_at       timestamptz,
+    early_refresh_at timestamptz,
+    outcome          smallint NOT NULL,
+    refresh_asked    boolean NOT NULL DEFAULT false,
+    handle           text PRIMARY KEY,
+    did              bytea
+);
+
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.
 CREATE OR REPLACE FUNCTION lodestar_b32(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$
