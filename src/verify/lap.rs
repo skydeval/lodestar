@@ -19,7 +19,8 @@ use tokio_postgres::Client;
 
 use super::limiter;
 use super::shared::{self, ClaimCounter};
-use super::worker::{Shared, check_one};
+use super::domains::{Admit, Kind};
+use super::worker::{How, Shared, check_one};
 use crate::db;
 use crate::queue::{self, Item};
 
@@ -112,7 +113,29 @@ impl Lap<'_> {
                 }
                 continue;
             }
-            let permit = if self.opts.domain.is_some() {
+            let walker = self.opts.domain.is_some();
+            // A paused domain: the general lap leaves the account to the
+            // queue and moves on; a large domain's own walker waits where
+            // it is, and its lap does not end.
+            let how = loop {
+                let admit = self.shared.pauses.lock().expect("pauses lock").admit(&domain, Kind::First, chrono::Utc::now().timestamp_millis());
+                match admit {
+                    Admit::Go => break Some(How { kind: Kind::First, probe: false }),
+                    Admit::Probe => break Some(How { kind: Kind::First, probe: true }),
+                    Admit::Wait if !walker => break None,
+                    Admit::Wait => {
+                        tokio::select! {
+                            _ = stop.changed() => return Ok(false),
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        }
+                    }
+                }
+            };
+            let Some(how) = how else {
+                overflow.push(did);
+                continue;
+            };
+            let permit = if walker {
                 // A large domain's walker waits for its domain's rate.
                 tokio::select! {
                     _ = stop.changed() => return Ok(false),
@@ -128,7 +151,7 @@ impl Lap<'_> {
                 }
             };
             self.shared.counts.lap_checks.fetch_add(1, Ordering::Relaxed);
-            tasks.spawn(check_one(self.shared.clone(), did, claim, domain, Some(permit)));
+            tasks.spawn(check_one(self.shared.clone(), did, claim, domain, Some(permit), how));
         }
         if !overflow.is_empty() {
             let items: Vec<Item> = overflow.iter().map(|d| Item { did: d.as_slice(), kind: queue::KIND_HANDLE, listed: false }).collect();

@@ -14,6 +14,7 @@ use tokio_postgres::Client;
 use super::check::{Checker, Outcome};
 use super::control::{Control, Gate};
 use super::decide::Rules;
+use super::domains::{Admit, Answer, Change, Kind, Pauses, State};
 use super::lap;
 use super::limiter::{self, Limiter};
 use super::pause;
@@ -78,6 +79,8 @@ pub(super) struct Shared {
     clients: Vec<Mutex<Client>>,
     next: AtomicUsize,
     pub(super) counts: Counts,
+    /// The per-domain pauses.
+    pub(super) pauses: std::sync::Mutex<Pauses>,
 }
 
 impl Shared {
@@ -107,9 +110,42 @@ impl Shared {
     }
 }
 
+/// How a check came to be made.
+#[derive(Clone, Copy)]
+pub(super) struct How {
+    pub kind: Kind,
+    /// It is its domain's probe during a pause.
+    pub probe: bool,
+}
+
+/// Store and report what the per-domain pauses did.
+pub(super) async fn save_changes(client: &Client, changes: &[Change]) -> Result<()> {
+    for c in changes {
+        let source = format!("pause{}:{}", c.pause, c.domain);
+        match c.state {
+            State::Clear => {
+                tracing::info!(domain = %c.domain, pause = c.pause, "domain pause ended");
+                client.execute("DELETE FROM sync_state WHERE source = $1", &[&source]).await?;
+            }
+            State::Paused | State::Released => {
+                let phase = if c.state == State::Paused { "paused" } else { "released" };
+                tracing::warn!(domain = %c.domain, pause = c.pause, state = phase, "domain pause");
+                client
+                    .execute(
+                        "INSERT INTO sync_state (source, origin, cursor, phase, tip_at) VALUES ($1, '', 0, $2, to_timestamp($3)) \
+                         ON CONFLICT (source) DO UPDATE SET phase = EXCLUDED.phase, tip_at = EXCLUDED.tip_at",
+                        &[&source, &phase, &(c.since as f64 / 1000.0)],
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Check one account's handle and apply what is found. Leaves the queue
 /// row in place if the claim changed meanwhile, so the new claim is checked.
-pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: String, held: Option<limiter::Permit>) -> Result<()> {
+pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: String, held: Option<limiter::Permit>, how: How) -> Result<()> {
     let from_lap = held.is_some();
     let Some(found) = shared.resolve(&claim, &domain, held).await else {
         // Dropped. A queued check keeps its row; a lap's check has none,
@@ -121,18 +157,40 @@ pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, 
         return Ok(());
     };
     let at = chrono::Utc::now().timestamp_millis();
+    let answer = match found.outcome {
+        Outcome::Did(_) => Answer::Did,
+        Outcome::Nothing => Answer::Nothing,
+        Outcome::Inconclusive(_) => Answer::Failed,
+    };
+    let (failing, hold_demotions) = {
+        let pauses = shared.pauses.lock().expect("pauses lock");
+        (pauses.failing(&domain), pauses.hold_demotions(&domain))
+    };
     let mut client = shared.db().lock().await;
-    let applied = store::apply_handle_result(&mut client, &shared.rules, &did, &claim, &found, at, false).await?;
+    if how.probe && failing && answer == Answer::Failed {
+        // A failing probe changes nothing: no row is opened, moved or settled.
+        shared.pauses.lock().expect("pauses lock").record(&domain, how.kind, false, answer, true, at);
+        if from_lap {
+            queue::push(&*client, queue::REASON_LAP_OVERFLOW, &[queue::Item { did: &did, kind: KIND_HANDLE, listed: false }]).await?;
+        }
+        return Ok(());
+    }
+    let applied = store::apply_handle_result(&mut client, &shared.rules, &did, &claim, &found, at, hold_demotions).await?;
     let done = match applied {
-        Applied::Status(_) => {
-            let counter = match found.outcome {
-                Outcome::Did(_) if applied == Applied::Status(db::HANDLE_VERIFIED) => &shared.counts.verified,
-                Outcome::Did(_) => &shared.counts.mismatch,
-                Outcome::Nothing => &shared.counts.nothing,
-                Outcome::Inconclusive(_) => &shared.counts.failing,
+        Applied::Status { now, was, had_failure } => {
+            let counter = match answer {
+                Answer::Did if now == db::HANDLE_VERIFIED => &shared.counts.verified,
+                Answer::Did => &shared.counts.mismatch,
+                Answer::Nothing => &shared.counts.nothing,
+                Answer::Failed => &shared.counts.failing,
             };
             counter.fetch_add(1, Ordering::Relaxed);
             shared.gate.note(&did);
+            // A handle already known to be failing is not a first attempt,
+            // however its check came to be made.
+            let kind = if how.kind == Kind::First && (had_failure || was == db::HANDLE_UNREACHABLE) { Kind::Retry } else { how.kind };
+            let changes = shared.pauses.lock().expect("pauses lock").record(&domain, kind, was == db::HANDLE_VERIFIED, answer, how.probe, at);
+            save_changes(&client, &changes).await?;
             true
         }
         Applied::Stale => {
@@ -156,8 +214,9 @@ async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Re
         return Ok(());
     };
     let at = chrono::Utc::now().timestamp_millis();
+    let hold_demotions = shared.pauses.lock().expect("pauses lock").hold_demotions(&domain);
     let mut client = shared.db().lock().await;
-    shared::apply(&mut client, &shared.rules, &handle, &found, at, false).await?;
+    shared::apply(&mut client, &shared.rules, &handle, &found, at, hold_demotions).await?;
     shared.counts.shared_resolutions.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
@@ -207,6 +266,10 @@ impl Running {
         }
     }
 
+    fn has_room(&self, domain: &str, cap: usize) -> bool {
+        self.per_domain.get(domain).copied().unwrap_or(0) < cap * 2
+    }
+
     /// True if the domain has room for another check to wait on it.
     fn admit(&mut self, key: &Key, domain: &str, cap: usize) -> bool {
         let n = self.per_domain.entry(domain.to_owned()).or_insert(0);
@@ -235,9 +298,18 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         tracing::warn!("running with no control checks: lodestar cannot tell its own outage from the network's");
         gate.open();
     }
-    let shared = Arc::new(Shared { checker, gate, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default() });
     let mut control = db::connect(&opts.database_url).await?;
-
+    // Domain pauses in force when lodestar stopped are still in force.
+    let mut pauses = Pauses::default();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for r in control.query("SELECT source, phase, (extract(epoch FROM tip_at) * 1000)::bigint FROM sync_state WHERE source LIKE 'pause_:%'", &[]).await? {
+        let source: String = r.get(0);
+        let state = if r.get::<_, String>(1) == "paused" { State::Paused } else { State::Released };
+        if let Some((kind, domain)) = source.split_once(':') {
+            pauses.restore(domain, if kind == "pause2" { 2 } else { 3 }, state, r.get::<_, Option<i64>>(2).unwrap_or(now_ms), now_ms);
+        }
+    }
+    let shared = Arc::new(Shared { pauses: std::sync::Mutex::new(pauses), checker, gate, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default() });
     // Which handles are shared has to be known before anything is checked.
     let counter = Arc::new(std::sync::RwLock::new(ClaimCounter::new(opts.shared_threshold)));
     let t = Instant::now();
@@ -329,13 +401,25 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     continue;
                 }
                 let domain = limiter::registrable(&claim).to_owned();
-                if !running.admit(&key, &domain, cap_of(&domain)) {
+                if !running.has_room(&domain, cap_of(&domain)) {
                     continue;
                 }
+                let kind = match reason {
+                    queue::REASON_RETRY => Kind::Retry,
+                    queue::REASON_CONFIRM => Kind::Confirm,
+                    _ => Kind::First,
+                };
+                let how = match shared.pauses.lock().expect("pauses lock").admit(&domain, kind, chrono::Utc::now().timestamp_millis()) {
+                    // The domain is paused: the entry waits where it is.
+                    Admit::Wait => continue,
+                    Admit::Probe => How { kind, probe: true },
+                    Admit::Go => How { kind, probe: false },
+                };
+                running.admit(&key, &domain, cap_of(&domain));
                 started += 1;
                 let shared = shared.clone();
                 running.tasks.spawn(async move {
-                    let result = check_one(shared, did, claim, domain.clone(), None).await;
+                    let result = check_one(shared, did, claim, domain.clone(), None, how).await;
                     (key, domain, result)
                 });
             }
@@ -355,6 +439,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             }
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
+                // Let the domain pauses' holds run out.
+                let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
+                save_changes(&control, &changes).await?;
             }
             Some(ended) = controls.join_next(), if !controls.is_empty() => {
                 ended??;
@@ -366,7 +453,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                         continue;
                     }
                     let domain = limiter::registrable(&handle).to_owned();
-                    if !running.admit(&key, &domain, cap_of(&domain)) {
+                    if shared.pauses.lock().expect("pauses lock").failing(&domain) || !running.admit(&key, &domain, cap_of(&domain)) {
                         continue;
                     }
                     let shared = shared.clone();

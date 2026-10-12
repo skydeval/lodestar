@@ -80,6 +80,15 @@ Work towards 0.1.0.
   left out of the count after a day, never taking a method below
   two. `lodestar verify` refuses to start without at least two
   controls of each method.
+- The two per-domain pauses. When more than 60% of a domain's first
+  attempts fail, checks for it stop apart from a probe one minute
+  in and every ten minutes after, and a conclusive probe ends the
+  pause. When more than half the answers for a domain's verified
+  handles are "nothing", confirming checks wait and nothing is
+  demoted until most answers are right again. Each ends after 24
+  hours regardless and cannot start again until the domain has
+  behaved. Their state is stored, and their holds do not run during
+  a control pause.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

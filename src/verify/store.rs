@@ -13,8 +13,15 @@ pub const FAILING_HANDLE: i16 = 0;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Applied {
-    /// The result was applied. The handle's status is now this.
-    Status(i16),
+    /// The result was applied.
+    Status {
+        /// The handle's status now.
+        now: i16,
+        /// Its status when it was checked.
+        was: i16,
+        /// It had open failure state when it was checked.
+        had_failure: bool,
+    },
     /// The result no longer fits the account: its claim changed, it is not
     /// active, or a newer check has set its status. Nothing was written.
     Stale,
@@ -115,5 +122,5 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
         }
     }
     tx.commit().await?;
-    Ok(Applied::Status(decision.status.unwrap_or(status)))
+    Ok(Applied::Status { now: decision.status.unwrap_or(status), was: status, had_failure: failure.is_some() })
 }

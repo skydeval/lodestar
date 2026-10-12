@@ -4,6 +4,7 @@
 pub mod check;
 pub mod control;
 pub mod decide;
+pub mod domains;
 pub mod lap;
 pub mod limiter;
 pub mod pause;

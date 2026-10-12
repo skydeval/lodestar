@@ -97,6 +97,8 @@ async fn pause_started(client: &Client, shared: &Shared, lookback: Duration) -> 
     // And each of those handles is checked again when the pause ends.
     let items: Vec<Item> = recent.iter().map(|d| Item { did: d.as_slice(), kind: queue::KIND_HANDLE, listed: false }).collect();
     queue::push(client, queue::REASON_RECHECK, &items).await?;
+    // The domain samples hold the same suspect results.
+    shared.pauses.lock().expect("pauses lock").clear_samples();
     tracing::warn!(rechecks = recent.len(), "control checks failing: all outbound verification is paused");
     Ok(())
 }
@@ -164,6 +166,8 @@ pub(super) async fn run(shared: Arc<Shared>, controls: Vec<Control>, mut client:
             Verdict::Resume => {
                 if let Some(s) = since.take() {
                     pause_ended(&mut client, s, now).await?;
+                    // The domain pauses' holds did not run meanwhile.
+                    shared.pauses.lock().expect("pauses lock").shift(now - s);
                 }
                 shared.gate.open();
                 if !was_open {
