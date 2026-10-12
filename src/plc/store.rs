@@ -24,7 +24,10 @@ impl PdsCache {
     }
 
     async fn intern(&mut self, tx: &Transaction<'_>, wanted: Vec<&str>) -> Result<()> {
-        let mut missing: Vec<&str> = wanted.into_iter().filter(|e| !self.0.contains_key(*e)).collect();
+        let mut missing: Vec<&str> = wanted
+            .into_iter()
+            .filter(|e| !self.0.contains_key(*e))
+            .collect();
         missing.sort_unstable();
         missing.dedup();
         if missing.is_empty() {
@@ -49,7 +52,12 @@ impl PdsCache {
     fn id(&self, endpoint: Option<&str>) -> Result<Option<i32>> {
         match endpoint {
             None => Ok(None),
-            Some(e) => self.0.get(e).copied().map(Some).with_context(|| format!("endpoint was not interned: {e}")),
+            Some(e) => self
+                .0
+                .get(e)
+                .copied()
+                .map(Some)
+                .with_context(|| format!("endpoint was not interned: {e}")),
         }
     }
 }
@@ -79,7 +87,11 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
                 claim: r.get(1),
                 pds: r.get(2),
                 key: r.get(3),
-                status: if status == db::STATUS_TOMBSTONED { Status::Tombstoned } else { Status::Active },
+                status: if status == db::STATUS_TOMBSTONED {
+                    Status::Tombstoned
+                } else {
+                    Status::Active
+                },
                 created_at: Some(r.get(5)),
                 ..Identity::default()
             },
@@ -105,7 +117,14 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
             with_recent.push(did.clone());
         }
         let id = ids.get_mut(&did).expect("asked for by did");
-        id.recent.push(RecentOp { seq: r.get(1), cid: r.get(2), created_ms: r.get(3), created_at: None, hist_seq: r.get(4), new: false });
+        id.recent.push(RecentOp {
+            seq: r.get(1),
+            cid: r.get(2),
+            created_ms: r.get(3),
+            created_at: None,
+            hist_seq: r.get(4),
+            new: false,
+        });
     }
 
     // Every row for identities a fork could touch, the last row for the rest.
@@ -124,7 +143,13 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
     for r in rows {
         let did: Vec<u8> = r.get(0);
         let id = ids.get_mut(&did).expect("asked for by did");
-        id.hist.push(HistRow { seq: r.get(1), claim: r.get(2), pds: r.get(3), changed_at: None, new: false });
+        id.hist.push(HistRow {
+            seq: r.get(1),
+            claim: r.get(2),
+            pds: r.get(3),
+            changed_at: None,
+            new: false,
+        });
     }
     Ok(ids)
 }
@@ -160,19 +185,40 @@ pub async fn apply_page(
     let mut endpoints: Vec<&str> = Vec::new();
     for id in ids.values().filter(|i| i.dirty) {
         endpoints.extend(id.pds.as_deref());
-        endpoints.extend(id.hist.iter().filter(|h| h.new).filter_map(|h| h.pds.as_deref()));
+        endpoints.extend(
+            id.hist
+                .iter()
+                .filter(|h| h.new)
+                .filter_map(|h| h.pds.as_deref()),
+        );
     }
     pds.intern(&tx, endpoints).await?;
 
     // New identities.
-    let (mut n_did, mut n_created, mut n_pds, mut n_key, mut n_claim, mut n_status, mut n_hs) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut n_did, mut n_created, mut n_pds, mut n_key, mut n_claim, mut n_status, mut n_hs) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     // Identities that already have a row.
-    let (mut u_did, mut u_pds, mut u_key, mut u_claim, mut u_status, mut u_hs, mut u_reset) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut h_did, mut h_seq, mut h_at, mut h_claim, mut h_pds) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut u_did, mut u_pds, mut u_key, mut u_claim, mut u_status, mut u_hs, mut u_reset) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let (mut h_did, mut h_seq, mut h_at, mut h_claim, mut h_pds) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut hd_did, mut hd_seq) = (Vec::new(), Vec::new());
-    let (mut r_did, mut r_seq, mut r_cid, mut r_at, mut r_hist) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut r_did, mut r_seq, mut r_cid, mut r_at, mut r_hist) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut rd_did, mut rd_seq) = (Vec::new(), Vec::new());
 
     let mut claims: Vec<Item> = Vec::new();
@@ -188,7 +234,11 @@ pub async fn apply_page(
             _ => db::HANDLE_NONE,
         };
         if queue_claims && id.claim_changed && handle_status == db::HANDLE_PENDING {
-            claims.push(Item { did: did.as_slice(), kind: queue::KIND_HANDLE, listed: false });
+            claims.push(Item {
+                did: did.as_slice(),
+                kind: queue::KIND_HANDLE,
+                listed: false,
+            });
         }
         let pds_id = pds.id(id.pds.as_deref())?;
         if id.exists {
@@ -202,7 +252,11 @@ pub async fn apply_page(
         } else {
             stats.new_identities += 1;
             n_did.push(did);
-            n_created.push(id.created_at.as_deref().context("a new identity has no creation time")?);
+            n_created.push(
+                id.created_at
+                    .as_deref()
+                    .context("a new identity has no creation time")?,
+            );
             n_pds.push(pds_id);
             n_key.push(id.key.as_deref());
             n_claim.push(id.claim.as_deref());
@@ -212,7 +266,11 @@ pub async fn apply_page(
         for h in id.hist.iter().filter(|h| h.new) {
             h_did.push(did);
             h_seq.push(h.seq);
-            h_at.push(h.changed_at.as_deref().context("a new history row has no time")?);
+            h_at.push(
+                h.changed_at
+                    .as_deref()
+                    .context("a new history row has no time")?,
+            );
             h_claim.push(h.claim.as_deref());
             h_pds.push(pds.id(h.pds.as_deref())?);
         }
@@ -224,7 +282,11 @@ pub async fn apply_page(
             r_did.push(did);
             r_seq.push(r.seq);
             r_cid.push(r.cid.as_slice());
-            r_at.push(r.created_at.as_deref().context("a new operation has no time")?);
+            r_at.push(
+                r.created_at
+                    .as_deref()
+                    .context("a new operation has no time")?,
+            );
             r_hist.push(r.hist_seq);
         }
         for seq in &id.recent_deleted {
@@ -258,9 +320,19 @@ pub async fn apply_page(
         .context("updating accounts")?;
     }
     // A new claim never inherits an old claim's failures.
-    let reset: Vec<&Vec<u8>> = u_did.iter().zip(&u_reset).filter(|(_, r)| **r).map(|(d, _)| *d).collect();
+    let reset: Vec<&Vec<u8>> = u_did
+        .iter()
+        .zip(&u_reset)
+        .filter(|(_, r)| **r)
+        .map(|(d, _)| *d)
+        .collect();
     if !reset.is_empty() {
-        tx.execute("DELETE FROM check_failures WHERE kind = 0 AND did = ANY($1)", &[&reset]).await.context("clearing failure state")?;
+        tx.execute(
+            "DELETE FROM check_failures WHERE kind = 0 AND did = ANY($1)",
+            &[&reset],
+        )
+        .await
+        .context("clearing failure state")?;
     }
     // Deletes first: a row removed by a fork can share its seq with one written after it.
     if !hd_did.is_empty() {

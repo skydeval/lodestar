@@ -44,14 +44,22 @@ pub fn parse(spec: &str) -> Result<Control> {
     if !super::check::valid_did(did) {
         bail!("{did} is not a valid DID");
     }
-    Ok(Control { handle, did: did.to_owned(), https })
+    Ok(Control {
+        handle,
+        did: did.to_owned(),
+        https,
+    })
 }
 
 /// At least two controls of each method, each on its own registrable domain.
 pub fn validate(list: &[Control]) -> Result<()> {
     for https in [false, true] {
         let name = if https { "HTTPS" } else { "DNS" };
-        let mut domains: Vec<&str> = list.iter().filter(|c| c.https == https).map(|c| registrable(&c.handle)).collect();
+        let mut domains: Vec<&str> = list
+            .iter()
+            .filter(|c| c.https == https)
+            .map(|c| registrable(&c.handle))
+            .collect();
         let n = domains.len();
         domains.sort_unstable();
         domains.dedup();
@@ -59,7 +67,9 @@ pub fn validate(list: &[Control]) -> Result<()> {
             bail!("two {name} controls share a registrable domain; each needs its own");
         }
         if n < 2 {
-            bail!("{n} {name} controls are configured; at least two are needed, each on its own domain");
+            bail!(
+                "{n} {name} controls are configured; at least two are needed, each on its own domain"
+            );
         }
     }
     Ok(())
@@ -108,11 +118,19 @@ impl Judge {
     pub fn new(controls: &[Control], memory: Vec<Memory>, paused: bool) -> Self {
         let mut memory = memory;
         memory.resize(controls.len(), Memory::default());
-        Judge { https: controls.iter().map(|c| c.https).collect(), memory, paused: true, clear: 0, need: if paused { ROUNDS_TO_RESUME } else { 1 } }
+        Judge {
+            https: controls.iter().map(|c| c.https).collect(),
+            memory,
+            paused: true,
+            clear: 0,
+            need: if paused { ROUNDS_TO_RESUME } else { 1 },
+        }
     }
 
     fn failing_method(&self, https: bool, passed: &[bool]) -> bool {
-        let counted: Vec<usize> = (0..self.https.len()).filter(|i| self.https[*i] == https && !self.memory[*i].left_out).collect();
+        let counted: Vec<usize> = (0..self.https.len())
+            .filter(|i| self.https[*i] == https && !self.memory[*i].left_out)
+            .collect();
         let failed = counted.iter().filter(|i| !passed[**i]).count();
         failed * 2 > counted.len()
     }
@@ -121,14 +139,22 @@ impl Judge {
     /// asked because its domain has told lodestar to wait: it counts as
     /// whatever its last round was, or as failed if it has had none.
     pub fn round(&mut self, results: &[Option<bool>], now: i64) -> Verdict {
-        let passed: Vec<bool> = results.iter().zip(&self.memory).map(|(r, m)| r.or(m.last).unwrap_or(false)).collect();
+        let passed: Vec<bool> = results
+            .iter()
+            .zip(&self.memory)
+            .map(|(r, m)| r.or(m.last).unwrap_or(false))
+            .collect();
 
         for i in 0..passed.len() {
-            let other_passed = (0..passed.len()).any(|j| j != i && self.https[j] == self.https[i] && passed[j]);
+            let other_passed =
+                (0..passed.len()).any(|j| j != i && self.https[j] == self.https[i] && passed[j]);
             let m = &mut self.memory[i];
             m.last = Some(passed[i]);
             if passed[i] {
-                *m = Memory { last: Some(true), ..Memory::default() };
+                *m = Memory {
+                    last: Some(true),
+                    ..Memory::default()
+                };
             } else {
                 m.failing_since.get_or_insert(now);
                 m.rounds += 1;
@@ -138,13 +164,16 @@ impl Judge {
         // Leave out a control that has gone bad on its own, the one that
         // has failed longest first, never taking a method below two.
         for https in [false, true] {
-            let mut counted = (0..passed.len()).filter(|i| self.https[*i] == https && !self.memory[*i].left_out).count();
+            let mut counted = (0..passed.len())
+                .filter(|i| self.https[*i] == https && !self.memory[*i].left_out)
+                .count();
             let mut candidates: Vec<usize> = (0..passed.len())
                 .filter(|i| {
                     let m = &self.memory[*i];
                     self.https[*i] == https
                         && !m.left_out
-                        && m.failing_since.is_some_and(|since| now - since >= LEAVE_OUT_AFTER_MS)
+                        && m.failing_since
+                            .is_some_and(|since| now - since >= LEAVE_OUT_AFTER_MS)
                         && m.other_passed * 2 > m.rounds
                 })
                 .collect();
@@ -195,7 +224,13 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(lookback: Duration) -> Self {
-        Gate { open: AtomicBool::new(false), epoch: AtomicU64::new(0), opened: Notify::new(), recent: Mutex::new(VecDeque::new()), lookback }
+        Gate {
+            open: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            opened: Notify::new(),
+            recent: Mutex::new(VecDeque::new()),
+            lookback,
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -232,7 +267,10 @@ impl Gate {
     pub fn note(&self, did: &[u8]) {
         let now = Instant::now();
         let mut recent = self.recent.lock().expect("gate lock");
-        while recent.front().is_some_and(|(at, _)| now.duration_since(*at) > self.lookback) {
+        while recent
+            .front()
+            .is_some_and(|(at, _)| now.duration_since(*at) > self.lookback)
+        {
             recent.pop_front();
         }
         recent.push_back((now, did.to_vec()));
@@ -242,7 +280,11 @@ impl Gate {
     pub fn take_recent(&self) -> Vec<Vec<u8>> {
         let now = Instant::now();
         let mut recent = self.recent.lock().expect("gate lock");
-        recent.drain(..).filter(|(at, _)| now.duration_since(*at) <= self.lookback).map(|(_, did)| did).collect()
+        recent
+            .drain(..)
+            .filter(|(at, _)| now.duration_since(*at) <= self.lookback)
+            .map(|(_, did)| did)
+            .collect()
     }
 }
 
@@ -253,8 +295,15 @@ mod tests {
     const MIN: i64 = 60_000;
 
     fn controls(dns: usize, https: usize) -> Vec<Control> {
-        let one = |i: usize, https: bool| Control { handle: format!("c{i}.example{i}.com"), did: "did:plc:x".into(), https };
-        (0..dns).map(|i| one(i, false)).chain((dns..dns + https).map(|i| one(i, true))).collect()
+        let one = |i: usize, https: bool| Control {
+            handle: format!("c{i}.example{i}.com"),
+            did: "did:plc:x".into(),
+            https,
+        };
+        (0..dns)
+            .map(|i| one(i, false))
+            .chain((dns..dns + https).map(|i| one(i, true)))
+            .collect()
     }
 
     fn all(n: usize, pass: bool) -> Vec<Option<bool>> {
@@ -271,9 +320,26 @@ mod tests {
     #[test]
     fn specs_are_parsed_and_checked() {
         let c = parse("dns:Example.com=did:plc:abc").unwrap();
-        assert_eq!(c, Control { handle: "example.com".into(), did: "did:plc:abc".into(), https: false });
-        assert!(parse("https:a.example.org=did:web:example.org").unwrap().https);
-        for bad in ["example.com=did:plc:abc", "ftp:example.com=did:plc:abc", "dns:example.com", "dns:nodot=did:plc:abc", "dns:example.com=nope"] {
+        assert_eq!(
+            c,
+            Control {
+                handle: "example.com".into(),
+                did: "did:plc:abc".into(),
+                https: false
+            }
+        );
+        assert!(
+            parse("https:a.example.org=did:web:example.org")
+                .unwrap()
+                .https
+        );
+        for bad in [
+            "example.com=did:plc:abc",
+            "ftp:example.com=did:plc:abc",
+            "dns:example.com",
+            "dns:nodot=did:plc:abc",
+            "dns:example.com=nope",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert!(validate(&controls(2, 2)).is_ok());
@@ -308,16 +374,68 @@ mod tests {
     fn either_method_failing_pauses_and_the_methods_are_judged_apart() {
         let mut j = running(3, 3);
         // One DNS control down: one of three is not more than half.
-        assert_eq!(j.round(&[Some(false), Some(true), Some(true), Some(true), Some(true), Some(true)], MIN), Verdict::Stay);
+        assert_eq!(
+            j.round(
+                &[
+                    Some(false),
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(true)
+                ],
+                MIN
+            ),
+            Verdict::Stay
+        );
         assert!(!j.paused);
         // Every HTTPS control down while DNS is fine: the HTTPS path is broken.
-        assert_eq!(j.round(&[Some(true), Some(true), Some(true), Some(false), Some(false), Some(false)], 2 * MIN), Verdict::Pause);
+        assert_eq!(
+            j.round(
+                &[
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                    Some(false),
+                    Some(false)
+                ],
+                2 * MIN
+            ),
+            Verdict::Pause
+        );
         // Two of three is still failing.
-        assert_eq!(j.round(&[Some(true), Some(true), Some(true), Some(true), Some(false), Some(false)], 3 * MIN), Verdict::Stay);
+        assert_eq!(
+            j.round(
+                &[
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                    Some(false)
+                ],
+                3 * MIN
+            ),
+            Verdict::Stay
+        );
         // Back: three clear rounds, and a failing round in between starts the count again.
         assert_eq!(j.round(&all(6, true), 4 * MIN), Verdict::Stay);
         assert_eq!(j.round(&all(6, true), 5 * MIN), Verdict::Stay);
-        assert_eq!(j.round(&[Some(true), Some(true), Some(true), Some(false), Some(false), Some(true)], 6 * MIN), Verdict::Stay);
+        assert_eq!(
+            j.round(
+                &[
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                    Some(false),
+                    Some(true)
+                ],
+                6 * MIN
+            ),
+            Verdict::Stay
+        );
         assert_eq!(j.round(&all(6, true), 7 * MIN), Verdict::Stay);
         assert_eq!(j.round(&all(6, true), 8 * MIN), Verdict::Stay);
         assert_eq!(j.round(&all(6, true), 9 * MIN), Verdict::Resume);
@@ -332,7 +450,13 @@ mod tests {
         }
         assert!(!j.paused);
         // The live one blips: both fail, a pause starts.
-        assert_eq!(j.round(&[Some(true), Some(true), Some(false), Some(false)], 10 * MIN), Verdict::Pause);
+        assert_eq!(
+            j.round(
+                &[Some(true), Some(true), Some(false), Some(false)],
+                10 * MIN
+            ),
+            Verdict::Pause
+        );
         // It comes back. The dead one is still dead, and the pause still ends.
         assert_eq!(j.round(&dead, 11 * MIN), Verdict::Stay);
         assert_eq!(j.round(&dead, 12 * MIN), Verdict::Stay);
@@ -359,10 +483,16 @@ mod tests {
         assert!(!j.paused);
         // The first one recovers and is counted again; now the second can go.
         now += MIN;
-        j.round(&[Some(true), Some(true), Some(true), Some(false), Some(true)], now);
+        j.round(
+            &[Some(true), Some(true), Some(true), Some(false), Some(true)],
+            now,
+        );
         assert!(!j.memory[2].left_out);
         now += MIN;
-        j.round(&[Some(true), Some(true), Some(true), Some(false), Some(true)], now);
+        j.round(
+            &[Some(true), Some(true), Some(true), Some(false), Some(true)],
+            now,
+        );
         assert!(j.memory[3].left_out);
     }
 
@@ -383,23 +513,47 @@ mod tests {
     fn a_held_control_keeps_its_last_result() {
         let mut j = running(2, 2);
         // Both HTTPS controls held: they count as passed, as last round.
-        assert_eq!(j.round(&[Some(true), Some(true), None, None], MIN), Verdict::Stay);
+        assert_eq!(
+            j.round(&[Some(true), Some(true), None, None], MIN),
+            Verdict::Stay
+        );
         assert!(!j.paused);
         // With no earlier round a held control counts as failed.
         let mut fresh = Judge::new(&controls(2, 2), Vec::new(), false);
-        assert_eq!(fresh.round(&[Some(true), Some(true), None, None], 0), Verdict::Stay);
+        assert_eq!(
+            fresh.round(&[Some(true), Some(true), None, None], 0),
+            Verdict::Stay
+        );
         assert!(fresh.paused);
     }
 
     #[test]
     fn the_left_out_set_survives_a_restart() {
         let mut memory = vec![Memory::default(); 5];
-        memory[2] = Memory { failing_since: Some(0), rounds: 2000, other_passed: 2000, left_out: true, last: Some(false) };
-        memory[3] = Memory { failing_since: Some(0), rounds: 10, other_passed: 10, left_out: false, last: Some(false) };
+        memory[2] = Memory {
+            failing_since: Some(0),
+            rounds: 2000,
+            other_passed: 2000,
+            left_out: true,
+            last: Some(false),
+        };
+        memory[3] = Memory {
+            failing_since: Some(0),
+            rounds: 10,
+            other_passed: 10,
+            left_out: false,
+            last: Some(false),
+        };
         let mut j = Judge::new(&controls(2, 3), memory, false);
         // Two of three HTTPS controls are dead, one of them left out: one
         // of two counted is not more than half, so it opens at once.
-        assert_eq!(j.round(&[Some(true), Some(true), Some(false), Some(false), Some(true)], MIN), Verdict::Resume);
+        assert_eq!(
+            j.round(
+                &[Some(true), Some(true), Some(false), Some(false), Some(true)],
+                MIN
+            ),
+            Verdict::Resume
+        );
     }
 
     #[tokio::test(start_paused = true)]

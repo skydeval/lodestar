@@ -55,16 +55,32 @@ enum FetchError {
 /// One export request: the operations after `after`.
 async fn fetch(http: &reqwest::Client, opts: &Opts, after: i64) -> Result<Vec<Op>, FetchError> {
     let url = format!("{}/export?after={after}&count={}", opts.plc_url, opts.count);
-    let resp = http.get(&url).send().await.map_err(|e| FetchError::Transient(e.to_string(), None))?;
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| FetchError::Transient(e.to_string(), None))?;
     if !resp.status().is_success() {
-        let asked = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
-        return Err(FetchError::Transient(format!("status {}", resp.status()), asked.map(Duration::from_secs)));
+        let asked = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        return Err(FetchError::Transient(
+            format!("status {}", resp.status()),
+            asked.map(Duration::from_secs),
+        ));
     }
-    let body = resp.text().await.map_err(|e| FetchError::Transient(e.to_string(), None))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| FetchError::Transient(e.to_string(), None))?;
     let mut ops = Vec::with_capacity(opts.count as usize);
     let mut last = after;
     for line in body.lines().filter(|l| !l.is_empty()) {
-        let op = op::parse_line(line).with_context(|| format!("export page after {after}")).map_err(FetchError::Fatal)?;
+        let op = op::parse_line(line)
+            .with_context(|| format!("export page after {after}"))
+            .map_err(FetchError::Fatal)?;
         if op.seq <= last {
             return Err(FetchError::Fatal(anyhow::anyhow!(
                 "export page after {after} holds seq {} after {last}: not the order lodestar relies on",
@@ -80,7 +96,12 @@ async fn fetch(http: &reqwest::Client, opts: &Opts, after: i64) -> Result<Vec<Op
 /// Fetch pages one after another, up to and including the first short one,
 /// and hand them on. Pages already fetched wait in the channel, so the
 /// next is on its way while one is applied.
-async fn page_loop(http: reqwest::Client, opts: Opts, mut after: i64, tx: mpsc::Sender<Vec<Op>>) -> Result<()> {
+async fn page_loop(
+    http: reqwest::Client,
+    opts: Opts,
+    mut after: i64,
+    tx: mpsc::Sender<Vec<Op>>,
+) -> Result<()> {
     let mut backoff = BACKOFF_START;
     loop {
         let started = Instant::now();
@@ -89,7 +110,10 @@ async fn page_loop(http: reqwest::Client, opts: Opts, mut after: i64, tx: mpsc::
             Err(FetchError::Fatal(e)) => return Err(e),
             Err(FetchError::Transient(why, asked)) => {
                 let wait = asked.map_or(backoff, |a| a.max(backoff)).min(BACKOFF_MAX);
-                tracing::warn!(after, "export request failed: {why}; trying again in {wait:?}");
+                tracing::warn!(
+                    after,
+                    "export request failed: {why}; trying again in {wait:?}"
+                );
                 tokio::time::sleep(wait).await;
                 backoff = (backoff * 2).min(BACKOFF_MAX);
                 continue;
@@ -144,7 +168,16 @@ impl Source<'_> {
         let Some(last) = ops.last() else {
             return Ok(());
         };
-        let stats = match store::apply_page(self.client, &mut self.pds, &self.opts.plc_url, ops, self.window_ms, self.live).await {
+        let stats = match store::apply_page(
+            self.client,
+            &mut self.pds,
+            &self.opts.plc_url,
+            ops,
+            self.window_ms,
+            self.live,
+        )
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 self.pds.clear();
@@ -183,9 +216,18 @@ impl Source<'_> {
     /// table at the size of its peak.
     async fn finish_first_sync(&mut self) -> Result<()> {
         tracing::info!("first sync reached the tip; rebuilding the accounts key");
-        self.client.batch_execute("REINDEX INDEX CONCURRENTLY accounts_pkey").await.context("rebuilding the accounts key")?;
-        self.client.batch_execute("VACUUM FULL plc_recent_ops").await.context("rebuilding the recovery-window table")?;
-        self.client.batch_execute("ANALYZE").await.context("analyzing")?;
+        self.client
+            .batch_execute("REINDEX INDEX CONCURRENTLY accounts_pkey")
+            .await
+            .context("rebuilding the accounts key")?;
+        self.client
+            .batch_execute("VACUUM FULL plc_recent_ops")
+            .await
+            .context("rebuilding the recovery-window table")?;
+        self.client
+            .batch_execute("ANALYZE")
+            .await
+            .context("analyzing")?;
         Ok(())
     }
 
@@ -204,7 +246,12 @@ impl Source<'_> {
 
     async fn page_to_tip(&mut self) -> Result<Paged> {
         let (tx, mut rx) = mpsc::channel::<Vec<Op>>(4);
-        let pager = tokio::spawn(page_loop(self.http.clone(), self.opts.clone(), self.cursor, tx));
+        let pager = tokio::spawn(page_loop(
+            self.http.clone(),
+            self.opts.clone(),
+            self.cursor,
+            tx,
+        ));
         let mut outcome = Paged::Tip;
         loop {
             let ops = tokio::select! {
@@ -256,11 +303,19 @@ impl Source<'_> {
 
     async fn stream(&mut self) -> Result<Streamed> {
         let url = self.stream_url();
-        let mut request = url.as_str().into_client_request().context("building the stream request")?;
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .context("building the stream request")?;
         if let Ok(v) = HeaderValue::from_str(&self.opts.user_agent) {
             request.headers_mut().insert("User-Agent", v);
         }
-        let mut ws = match tokio::time::timeout(Duration::from_secs(20), tokio_tungstenite::connect_async(request)).await {
+        let mut ws = match tokio::time::timeout(
+            Duration::from_secs(20),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        {
             Ok(Ok((ws, _))) => ws,
             Ok(Err(e)) => return Ok(Streamed::Unavailable(e.to_string())),
             Err(_) => return Ok(Streamed::Unavailable("timed out connecting".into())),
@@ -352,12 +407,20 @@ impl Source<'_> {
 
 pub async fn run(mut owned: Client, opts: Opts, stop: watch::Receiver<bool>) -> Result<()> {
     let client = &mut owned;
-    let row = client.query_opt("SELECT origin, cursor, phase FROM sync_state WHERE source = $1", &[&SOURCE]).await?;
+    let row = client
+        .query_opt(
+            "SELECT origin, cursor, phase FROM sync_state WHERE source = $1",
+            &[&SOURCE],
+        )
+        .await?;
     let (cursor, live) = match row {
         Some(r) => {
             let origin: String = r.get(0);
             if origin != opts.plc_url {
-                bail!("the stored cursor belongs to {origin}; refusing to run against {}", opts.plc_url);
+                bail!(
+                    "the stored cursor belongs to {origin}; refusing to run against {}",
+                    opts.plc_url
+                );
             }
             let phase: String = r.get(2);
             (r.get::<_, i64>(1), phase == "live")
@@ -368,7 +431,10 @@ pub async fn run(mut owned: Client, opts: Opts, stop: watch::Receiver<bool>) -> 
 
     let mut source = Source {
         client,
-        http: reqwest::Client::builder().user_agent(opts.user_agent.clone()).timeout(Duration::from_secs(60)).build()?,
+        http: reqwest::Client::builder()
+            .user_agent(opts.user_agent.clone())
+            .timeout(Duration::from_secs(60))
+            .build()?,
         window_ms: opts.window_hours * 3_600_000,
         opts,
         stop,

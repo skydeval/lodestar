@@ -29,7 +29,13 @@ async fn load_memory(client: &Client, controls: &[Control]) -> Result<Vec<Memory
         .map(|c| {
             rows.iter()
                 .find(|r| r.get::<_, String>(0) == c.handle && r.get::<_, bool>(1) == c.https)
-                .map(|r| Memory { failing_since: r.get(2), rounds: r.get(3), other_passed: r.get(4), left_out: r.get(5), last: r.get(6) })
+                .map(|r| Memory {
+                    failing_since: r.get(2),
+                    rounds: r.get(3),
+                    other_passed: r.get(4),
+                    left_out: r.get(5),
+                    last: r.get(6),
+                })
                 .unwrap_or_default()
         })
         .collect())
@@ -64,7 +70,10 @@ async fn ask(shared: &Shared, c: &Control) -> Option<bool> {
             return Some(true);
         }
         if let Some(wait) = found.retry_after {
-            shared.limiter.hold(registrable(&c.handle), wait.min(shared.rules.retry_after_ceiling));
+            shared.limiter.hold(
+                registrable(&c.handle),
+                wait.min(shared.rules.retry_after_ceiling),
+            );
             break;
         }
     }
@@ -95,11 +104,21 @@ async fn pause_started(client: &Client, shared: &Shared, lookback: Duration) -> 
         )
         .await?;
     // And each of those handles is checked again when the pause ends.
-    let items: Vec<Item> = recent.iter().map(|d| Item { did: d.as_slice(), kind: queue::KIND_HANDLE, listed: false }).collect();
+    let items: Vec<Item> = recent
+        .iter()
+        .map(|d| Item {
+            did: d.as_slice(),
+            kind: queue::KIND_HANDLE,
+            listed: false,
+        })
+        .collect();
     queue::push(client, queue::REASON_RECHECK, &items).await?;
     // The domain samples hold the same suspect results.
     shared.pauses.lock().expect("pauses lock").clear_samples();
-    tracing::warn!(rechecks = recent.len(), "control checks failing: all outbound verification is paused");
+    tracing::warn!(
+        rechecks = recent.len(),
+        "control checks failing: all outbound verification is paused"
+    );
     Ok(())
 }
 
@@ -121,19 +140,40 @@ async fn pause_ended(client: &mut Client, since_ms: i64, now_ms: i64) -> Result<
         .await
         .context("moving failure clocks forward")?;
     }
-    tx.execute("UPDATE sync_state SET phase = 'clear' WHERE source = $1", &[&SOURCE]).await?;
+    tx.execute(
+        "UPDATE sync_state SET phase = 'clear' WHERE source = $1",
+        &[&SOURCE],
+    )
+    .await?;
     tx.commit().await?;
-    tracing::info!(paused_seconds = secs as i64, "control checks clear: verification resumes");
+    tracing::info!(
+        paused_seconds = secs as i64,
+        "control checks clear: verification resumes"
+    );
     Ok(())
 }
 
-pub(super) async fn run(shared: Arc<Shared>, controls: Vec<Control>, mut client: Client, lookback: Duration, mut stop: watch::Receiver<bool>) -> Result<()> {
+pub(super) async fn run(
+    shared: Arc<Shared>,
+    controls: Vec<Control>,
+    mut client: Client,
+    lookback: Duration,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
     let stored = client
         .query_opt("SELECT phase, (extract(epoch FROM tip_at) * 1000)::bigint FROM sync_state WHERE source = $1", &[&SOURCE])
         .await?;
     // When the pause in force began, if one is.
-    let mut since: Option<i64> = stored.and_then(|r| (r.get::<_, String>(0) == "paused").then(|| r.get::<_, Option<i64>>(1)).flatten());
-    let mut judge = Judge::new(&controls, load_memory(&client, &controls).await?, since.is_some());
+    let mut since: Option<i64> = stored.and_then(|r| {
+        (r.get::<_, String>(0) == "paused")
+            .then(|| r.get::<_, Option<i64>>(1))
+            .flatten()
+    });
+    let mut judge = Judge::new(
+        &controls,
+        load_memory(&client, &controls).await?,
+        since.is_some(),
+    );
     let mut round = tokio::time::interval(ROUND);
     loop {
         tokio::select! {
@@ -148,7 +188,12 @@ pub(super) async fn run(shared: Arc<Shared>, controls: Vec<Control>, mut client:
         let was_open = shared.gate.is_open();
         let verdict = judge.round(&results, now);
         save_memory(&client, &controls, &judge.memory).await?;
-        let failed: Vec<&str> = controls.iter().zip(&results).filter(|(_, r)| **r == Some(false)).map(|(c, _)| c.handle.as_str()).collect();
+        let failed: Vec<&str> = controls
+            .iter()
+            .zip(&results)
+            .filter(|(_, r)| **r == Some(false))
+            .map(|(c, _)| c.handle.as_str())
+            .collect();
         match verdict {
             Verdict::Pause => {
                 shared.gate.close();
@@ -186,15 +231,26 @@ pub(super) async fn run(shared: Arc<Shared>, controls: Vec<Control>, mut client:
                             &[&SOURCE],
                         )
                         .await?;
-                    tracing::warn!(?failed, "control checks failing at start: verification has not begun");
+                    tracing::warn!(
+                        ?failed,
+                        "control checks failing at start: verification has not begun"
+                    );
                 } else if !failed.is_empty() {
                     tracing::warn!(?failed, "a control failed");
                 }
             }
         }
-        let left_out: Vec<&str> = controls.iter().zip(&judge.memory).filter(|(_, m)| m.left_out).map(|(c, _)| c.handle.as_str()).collect();
+        let left_out: Vec<&str> = controls
+            .iter()
+            .zip(&judge.memory)
+            .filter(|(_, m)| m.left_out)
+            .map(|(c, _)| c.handle.as_str())
+            .collect();
         if !left_out.is_empty() {
-            tracing::warn!(?left_out, "controls left out of the count: the list needs attention");
+            tracing::warn!(
+                ?left_out,
+                "controls left out of the count: the list needs attention"
+            );
         }
     }
     Ok(())

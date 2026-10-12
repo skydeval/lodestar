@@ -47,18 +47,35 @@ pub async fn take(client: &Client) -> Result<Vec<Request>> {
         )
         .await
         .context("taking live requests")?;
-    Ok(rows.iter().map(|r| Request { id: r.get(0), kind: r.get(1), subject: r.get(2) }).collect())
+    Ok(rows
+        .iter()
+        .map(|r| Request {
+            id: r.get(0),
+            kind: r.get(1),
+            subject: r.get(2),
+        })
+        .collect())
 }
 
 async fn answer(client: &Client, id: i64, outcome: &str, did: Option<&[u8]>) -> Result<()> {
-    client.execute("UPDATE resolve_requests SET state = 2, outcome = $2, did = $3 WHERE id = $1", &[&id, &outcome, &did]).await?;
+    client
+        .execute(
+            "UPDATE resolve_requests SET state = 2, outcome = $2, did = $3 WHERE id = $1",
+            &[&id, &outcome, &did],
+        )
+        .await?;
     Ok(())
 }
 
 /// The account a DID names, if lodestar has it: whether it is active, and
 /// its claim.
 async fn account(client: &Client, did: &[u8]) -> Result<Option<(bool, Option<String>)>> {
-    let row = client.query_opt("SELECT status, handle_claim FROM accounts WHERE did = $1", &[&did]).await?;
+    let row = client
+        .query_opt(
+            "SELECT status, handle_claim FROM accounts WHERE did = $1",
+            &[&did],
+        )
+        .await?;
     Ok(row.map(|r| (r.get::<_, i16>(0) == db::STATUS_ACTIVE, r.get(1))))
 }
 
@@ -78,7 +95,9 @@ async fn fetch_and_store(shared: &Shared, did_text: &str, did: &[u8]) -> Result<
         shared.checker.fetch_document(host).await
     };
     if let Some(wait) = retry_after {
-        shared.limiter.hold(&domain, wait.min(shared.rules.retry_after_ceiling));
+        shared
+            .limiter
+            .hold(&domain, wait.min(shared.rules.retry_after_ceiling));
     }
     if shared.gate.epoch() != epoch {
         return Ok(None);
@@ -92,7 +111,14 @@ async fn fetch_and_store(shared: &Shared, did_text: &str, did: &[u8]) -> Result<
         return Ok(Some(false));
     }
     let mut client = shared.db().lock().await;
-    web::apply(&mut client, &web::Rules::default(), did, Some(&document), false).await?;
+    web::apply(
+        &mut client,
+        &web::Rules::default(),
+        did,
+        Some(&document),
+        false,
+    )
+    .await?;
     Ok(Some(true))
 }
 
@@ -103,7 +129,11 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
     if !shared.gate.is_open() {
         return Ok((UNAVAILABLE, None));
     }
-    let admit = shared.pauses.lock().expect("pauses lock").admit(&domain, Kind::First, chrono::Utc::now().timestamp_millis());
+    let admit = shared.pauses.lock().expect("pauses lock").admit(
+        &domain,
+        Kind::First,
+        chrono::Utc::now().timestamp_millis(),
+    );
     if admit == Admit::Wait {
         return Ok((UNAVAILABLE, None));
     }
@@ -135,7 +165,17 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
         // verification, and it is recorded.
         Some((true, Some(claim))) if claim == handle => {
             let mut client = shared.db().lock().await;
-            match store::apply_handle_result(&mut client, &shared.rules, &did, handle, &found, at, false).await? {
+            match store::apply_handle_result(
+                &mut client,
+                &shared.rules,
+                &did,
+                handle,
+                &found,
+                at,
+                false,
+            )
+            .await?
+            {
                 Applied::Status { now, .. } if now == db::HANDLE_VERIFIED => {
                     shared.gate.note(&did);
                     Ok((FOUND, Some(did)))

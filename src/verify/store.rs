@@ -35,7 +35,15 @@ fn ms(column: &str) -> String {
 
 /// Apply the result of checking `handle` for the account `did`, resolved
 /// at `at` (milliseconds since the epoch).
-pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8], handle: &str, check: &Check, at: i64, hold_demotions: bool) -> Result<Applied> {
+pub async fn apply_handle_result(
+    client: &mut Client,
+    rules: &Rules,
+    did: &[u8],
+    handle: &str,
+    check: &Check,
+    at: i64,
+    hold_demotions: bool,
+) -> Result<Applied> {
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
@@ -62,7 +70,10 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
     let checked_at: Option<i64> = row.get(3);
     // A result applies only to the claim that was checked, and only if it
     // was resolved after the status it would replace was set.
-    if account_status != db::STATUS_ACTIVE || claim.as_deref() != Some(handle) || checked_at.is_some_and(|c| c >= at) {
+    if account_status != db::STATUS_ACTIVE
+        || claim.as_deref() != Some(handle)
+        || checked_at.is_some_and(|c| c >= at)
+    {
         return Ok(Applied::Stale);
     }
     let failure = row.get::<_, bool>(4).then(|| Failure {
@@ -72,7 +83,16 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
         nothing_at: row.get(8),
     });
     let named_self = matches!(&check.outcome, Outcome::Did(d) if encoding::did_bytes(d) == did);
-    let decision = decide::decide(rules, status, &check.outcome, named_self, failure, at, check.retry_after, hold_demotions);
+    let decision = decide::decide(
+        rules,
+        status,
+        &check.outcome,
+        named_self,
+        failure,
+        at,
+        check.retry_after,
+        hold_demotions,
+    );
     let at_s = at as f64 / 1000.0;
 
     if decision.status == Some(db::HANDLE_VERIFIED) {
@@ -82,7 +102,13 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
             .query(
                 "UPDATE accounts SET handle_status = $3, handle_checked_at = to_timestamp($4) \
                  WHERE handle_claim = $1 AND handle_status = $5 AND did <> $2 RETURNING did",
-                &[&handle, &did, &db::HANDLE_MISMATCH, &at_s, &db::HANDLE_VERIFIED],
+                &[
+                    &handle,
+                    &did,
+                    &db::HANDLE_MISMATCH,
+                    &at_s,
+                    &db::HANDLE_VERIFIED,
+                ],
             )
             .await
             .context("moving the handle")?
@@ -90,7 +116,11 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
             .map(|r| r.get(0))
             .collect();
         if !displaced.is_empty() {
-            tx.execute("DELETE FROM check_failures WHERE kind = $2 AND did = ANY($1)", &[&displaced, &FAILING_HANDLE]).await?;
+            tx.execute(
+                "DELETE FROM check_failures WHERE kind = $2 AND did = ANY($1)",
+                &[&displaced, &FAILING_HANDLE],
+            )
+            .await?;
         }
     }
     if decision.status.is_some() || decision.checked {
@@ -106,7 +136,11 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
     match decision.failure {
         FailureChange::Keep => {}
         FailureChange::Clear => {
-            tx.execute("DELETE FROM check_failures WHERE did = $1 AND kind = $2", &[&did, &FAILING_HANDLE]).await?;
+            tx.execute(
+                "DELETE FROM check_failures WHERE did = $1 AND kind = $2",
+                &[&did, &FAILING_HANDLE],
+            )
+            .await?;
         }
         FailureChange::Set(f) => {
             let secs = |v: Option<i64>| v.map(|ms| ms as f64 / 1000.0);
@@ -122,5 +156,9 @@ pub async fn apply_handle_result(client: &mut Client, rules: &Rules, did: &[u8],
         }
     }
     tx.commit().await?;
-    Ok(Applied::Status { now: decision.status.unwrap_or(status), was: status, had_failure: failure.is_some() })
+    Ok(Applied::Status {
+        now: decision.status.unwrap_or(status),
+        was: status,
+        had_failure: failure.is_some(),
+    })
 }

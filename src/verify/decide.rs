@@ -71,10 +71,18 @@ pub struct Decision {
 
 impl Decision {
     fn settled(status: i16) -> Self {
-        Decision { status: Some(status), checked: true, failure: FailureChange::Clear }
+        Decision {
+            status: Some(status),
+            checked: true,
+            failure: FailureChange::Clear,
+        }
     }
     fn unchanged() -> Self {
-        Decision { status: None, checked: false, failure: FailureChange::Keep }
+        Decision {
+            status: None,
+            checked: false,
+            failure: FailureChange::Keep,
+        }
     }
 }
 
@@ -91,6 +99,7 @@ fn ms(d: Duration) -> i64 {
 /// - `retry_after` is a wait the host asked for.
 /// - `hold_demotions` is set while the domain's verified handles are
 ///   resolving to nothing in bulk: no such result demotes anything.
+#[allow(clippy::too_many_arguments)]
 pub fn decide(
     rules: &Rules,
     status: i16,
@@ -106,7 +115,9 @@ pub fn decide(
         // The handle is someone else's. That account's own verification
         // moves the index.
         Outcome::Did(_) => Decision::settled(db::HANDLE_MISMATCH),
-        Outcome::Nothing if status != db::HANDLE_VERIFIED => Decision::settled(db::HANDLE_UNRESOLVED),
+        Outcome::Nothing if status != db::HANDLE_VERIFIED => {
+            Decision::settled(db::HANDLE_UNRESOLVED)
+        }
         Outcome::Nothing => {
             let open = failure.unwrap_or_default();
             match open.nothing_at {
@@ -114,10 +125,16 @@ pub fn decide(
                 None => Decision {
                     status: None,
                     checked: false,
-                    failure: FailureChange::Set(Failure { nothing_at: Some(at), next_attempt_at: at + ms(rules.confirming_delay), ..open }),
+                    failure: FailureChange::Set(Failure {
+                        nothing_at: Some(at),
+                        next_attempt_at: at + ms(rules.confirming_delay),
+                        ..open
+                    }),
                 },
                 // A later one confirms it, if it is late enough.
-                Some(first) if at - first >= ms(rules.confirming_delay) && !hold_demotions => Decision::settled(db::HANDLE_UNRESOLVED),
+                Some(first) if at - first >= ms(rules.confirming_delay) && !hold_demotions => {
+                    Decision::settled(db::HANDLE_UNRESOLVED)
+                }
                 // Too soon, whichever path produced it: it cannot stand in
                 // for the confirmation.
                 Some(_) => Decision::unchanged(),
@@ -127,11 +144,19 @@ pub fn decide(
             // A handle that has already settled as failing gets one attempt
             // a cycle and no failure state.
             if status == db::HANDLE_UNREACHABLE {
-                return Decision { status: None, checked: true, failure: FailureChange::Clear };
+                return Decision {
+                    status: None,
+                    checked: true,
+                    failure: FailureChange::Clear,
+                };
             }
             let open = failure.unwrap_or_default();
             let first = open.first_failure_at.unwrap_or(at);
-            let settle_after = if status == db::HANDLE_VERIFIED { rules.grace } else { rules.settle_unverified };
+            let settle_after = if status == db::HANDLE_VERIFIED {
+                rules.grace
+            } else {
+                rules.settle_unverified
+            };
             if open.first_failure_at.is_some() && at - first >= ms(settle_after) {
                 return Decision::settled(db::HANDLE_UNREACHABLE);
             }
@@ -162,7 +187,16 @@ mod tests {
     const H: i64 = 3_600_000;
 
     fn run(status: i16, outcome: Outcome, me: bool, failure: Option<Failure>, at: i64) -> Decision {
-        decide(&Rules::default(), status, &outcome, me, failure, at, None, false)
+        decide(
+            &Rules::default(),
+            status,
+            &outcome,
+            me,
+            failure,
+            at,
+            None,
+            false,
+        )
     }
 
     fn did() -> Outcome {
@@ -182,17 +216,41 @@ mod tests {
 
     #[test]
     fn a_did_is_conclusive_whatever_came_before() {
-        let open = Some(Failure { first_failure_at: Some(0), last_attempt_at: Some(0), next_attempt_at: 12 * H, nothing_at: Some(0) });
-        for status in [db::HANDLE_PENDING, db::HANDLE_UNREACHABLE, db::HANDLE_VERIFIED, db::HANDLE_MISMATCH] {
-            assert_eq!(run(status, did(), true, open, 5), Decision::settled(db::HANDLE_VERIFIED));
-            assert_eq!(run(status, did(), false, open, 5), Decision::settled(db::HANDLE_MISMATCH));
+        let open = Some(Failure {
+            first_failure_at: Some(0),
+            last_attempt_at: Some(0),
+            next_attempt_at: 12 * H,
+            nothing_at: Some(0),
+        });
+        for status in [
+            db::HANDLE_PENDING,
+            db::HANDLE_UNREACHABLE,
+            db::HANDLE_VERIFIED,
+            db::HANDLE_MISMATCH,
+        ] {
+            assert_eq!(
+                run(status, did(), true, open, 5),
+                Decision::settled(db::HANDLE_VERIFIED)
+            );
+            assert_eq!(
+                run(status, did(), false, open, 5),
+                Decision::settled(db::HANDLE_MISMATCH)
+            );
         }
     }
 
     #[test]
     fn nothing_applies_at_once_to_an_unverified_handle() {
-        for status in [db::HANDLE_PENDING, db::HANDLE_MISMATCH, db::HANDLE_UNREACHABLE, db::HANDLE_UNRESOLVED] {
-            assert_eq!(run(status, Outcome::Nothing, false, None, 5), Decision::settled(db::HANDLE_UNRESOLVED));
+        for status in [
+            db::HANDLE_PENDING,
+            db::HANDLE_MISMATCH,
+            db::HANDLE_UNREACHABLE,
+            db::HANDLE_UNRESOLVED,
+        ] {
+            assert_eq!(
+                run(status, Outcome::Nothing, false, None, 5),
+                Decision::settled(db::HANDLE_UNRESOLVED)
+            );
         }
     }
 
@@ -207,23 +265,61 @@ mod tests {
         assert_eq!(mark.next_attempt_at, 11 * H);
         assert_eq!(mark.first_failure_at, None);
         // Two minutes later is too soon, whoever asked.
-        assert_eq!(run(db::HANDLE_VERIFIED, Outcome::Nothing, false, Some(mark), 10 * H + 120_000), Decision::unchanged());
+        assert_eq!(
+            run(
+                db::HANDLE_VERIFIED,
+                Outcome::Nothing,
+                false,
+                Some(mark),
+                10 * H + 120_000
+            ),
+            Decision::unchanged()
+        );
         // An hour later it is confirmed.
-        assert_eq!(run(db::HANDLE_VERIFIED, Outcome::Nothing, false, Some(mark), 11 * H), Decision::settled(db::HANDLE_UNRESOLVED));
+        assert_eq!(
+            run(
+                db::HANDLE_VERIFIED,
+                Outcome::Nothing,
+                false,
+                Some(mark),
+                11 * H
+            ),
+            Decision::settled(db::HANDLE_UNRESOLVED)
+        );
         // A result naming the account clears the mark.
-        assert_eq!(run(db::HANDLE_VERIFIED, did(), true, Some(mark), 11 * H), Decision::settled(db::HANDLE_VERIFIED));
+        assert_eq!(
+            run(db::HANDLE_VERIFIED, did(), true, Some(mark), 11 * H),
+            Decision::settled(db::HANDLE_VERIFIED)
+        );
     }
 
     #[test]
     fn nothing_is_demoted_while_demotions_are_held() {
-        let mark = Failure { nothing_at: Some(0), next_attempt_at: H, ..Failure::default() };
-        let d = decide(&Rules::default(), db::HANDLE_VERIFIED, &Outcome::Nothing, false, Some(mark), 5 * H, None, true);
+        let mark = Failure {
+            nothing_at: Some(0),
+            next_attempt_at: H,
+            ..Failure::default()
+        };
+        let d = decide(
+            &Rules::default(),
+            db::HANDLE_VERIFIED,
+            &Outcome::Nothing,
+            false,
+            Some(mark),
+            5 * H,
+            None,
+            true,
+        );
         assert_eq!(d, Decision::unchanged());
     }
 
     #[test]
     fn a_failing_confirming_check_keeps_the_mark() {
-        let mark = Failure { nothing_at: Some(0), next_attempt_at: H, ..Failure::default() };
+        let mark = Failure {
+            nothing_at: Some(0),
+            next_attempt_at: H,
+            ..Failure::default()
+        };
         let d = run(db::HANDLE_VERIFIED, failing(), false, Some(mark), H);
         let f = set(&d);
         assert_eq!(f.nothing_at, Some(0));
@@ -243,9 +339,15 @@ mod tests {
         assert_eq!(f1.next_attempt_at, 24 * H);
         assert_eq!(f1.first_failure_at, Some(0));
         // The first failing result after 24 hours settles it.
-        assert_eq!(run(db::HANDLE_PENDING, failing(), false, Some(f1), 24 * H), Decision::settled(db::HANDLE_UNREACHABLE));
+        assert_eq!(
+            run(db::HANDLE_PENDING, failing(), false, Some(f1), 24 * H),
+            Decision::settled(db::HANDLE_UNREACHABLE)
+        );
         // An early extra attempt, say a consumer's, cannot settle it.
-        assert_eq!(set(&run(db::HANDLE_PENDING, failing(), false, Some(f1), 13 * H)).first_failure_at, Some(0));
+        assert_eq!(
+            set(&run(db::HANDLE_PENDING, failing(), false, Some(f1), 13 * H)).first_failure_at,
+            Some(0)
+        );
     }
 
     #[test]
@@ -270,19 +372,56 @@ mod tests {
     #[test]
     fn a_settled_handle_that_fails_again_gets_no_row() {
         let d = run(db::HANDLE_UNREACHABLE, failing(), false, None, 99 * H);
-        assert_eq!(d, Decision { status: None, checked: true, failure: FailureChange::Clear });
+        assert_eq!(
+            d,
+            Decision {
+                status: None,
+                checked: true,
+                failure: FailureChange::Clear
+            }
+        );
     }
 
     #[test]
     fn a_host_that_asks_to_wait_is_given_at_least_that() {
-        let rules = Rules { retry_min: Duration::from_secs(60), ..Rules::default() };
-        let asked = decide(&rules, db::HANDLE_PENDING, &failing(), false, None, 0, Some(Duration::from_secs(600)), false);
+        let rules = Rules {
+            retry_min: Duration::from_secs(60),
+            ..Rules::default()
+        };
+        let asked = decide(
+            &rules,
+            db::HANDLE_PENDING,
+            &failing(),
+            false,
+            None,
+            0,
+            Some(Duration::from_secs(600)),
+            false,
+        );
         assert_eq!(set(&asked).next_attempt_at, 600_000);
         // Up to the ceiling, an hour.
-        let long = decide(&rules, db::HANDLE_PENDING, &failing(), false, None, 0, Some(Duration::from_secs(86_400)), false);
+        let long = decide(
+            &rules,
+            db::HANDLE_PENDING,
+            &failing(),
+            false,
+            None,
+            0,
+            Some(Duration::from_secs(86_400)),
+            false,
+        );
         assert_eq!(set(&long).next_attempt_at, H);
         // And never less than the schedule's own wait.
-        let short = decide(&Rules::default(), db::HANDLE_PENDING, &failing(), false, None, 0, Some(Duration::from_secs(5)), false);
+        let short = decide(
+            &Rules::default(),
+            db::HANDLE_PENDING,
+            &failing(),
+            false,
+            None,
+            0,
+            Some(Duration::from_secs(5)),
+            false,
+        );
         assert_eq!(set(&short).next_attempt_at, 12 * H);
     }
 }

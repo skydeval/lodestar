@@ -73,14 +73,17 @@ impl Sample {
     /// Add a result, keeping the last 200 from the last hour.
     fn push(&mut self, at: i64, hit: bool, hour_limit: bool) {
         self.0.push_back((at, hit));
-        while self.0.len() > SAMPLE || (hour_limit && self.0.front().is_some_and(|(t, _)| at - t > HOUR)) {
+        while self.0.len() > SAMPLE
+            || (hour_limit && self.0.front().is_some_and(|(t, _)| at - t > HOUR))
+        {
             self.0.pop_front();
         }
     }
 
     /// More than `num/den` of at least 20 are hits.
     fn over(&self, num: usize, den: usize) -> bool {
-        self.0.len() >= SAMPLE_MIN && self.0.iter().filter(|(_, h)| *h).count() * den > self.0.len() * num
+        self.0.len() >= SAMPLE_MIN
+            && self.0.iter().filter(|(_, h)| *h).count() * den > self.0.len() * num
     }
 
     fn enough(&self) -> bool {
@@ -122,9 +125,21 @@ impl Pauses {
     pub fn restore(&mut self, domain: &str, pause: u8, state: State, since: i64, now: i64) {
         let d = self.domains.entry(domain.to_owned()).or_default();
         match (pause, state) {
-            (2, State::Paused) => d.failing = Some(Failing { since, next_probe: now + FIRST_PROBE, answered: false }),
+            (2, State::Paused) => {
+                d.failing = Some(Failing {
+                    since,
+                    next_probe: now + FIRST_PROBE,
+                    answered: false,
+                })
+            }
             (2, State::Released) => d.failing_released = true,
-            (3, State::Paused) => d.nothing = Some(Nothing { since, next_probe: now + FIRST_PROBE, sample: Sample::default() }),
+            (3, State::Paused) => {
+                d.nothing = Some(Nothing {
+                    since,
+                    next_probe: now + FIRST_PROBE,
+                    sample: Sample::default(),
+                })
+            }
             (3, State::Released) => d.nothing_released = true,
             _ => {}
         }
@@ -154,21 +169,38 @@ impl Pauses {
 
     /// True while no "nothing" result may demote a handle under the domain.
     pub fn hold_demotions(&self, domain: &str) -> bool {
-        self.domains.get(domain).is_some_and(|d| d.nothing.is_some())
+        self.domains
+            .get(domain)
+            .is_some_and(|d| d.nothing.is_some())
     }
 
     /// True while every check for the domain waits, apart from the probe.
     pub fn failing(&self, domain: &str) -> bool {
-        self.domains.get(domain).is_some_and(|d| d.failing.is_some())
+        self.domains
+            .get(domain)
+            .is_some_and(|d| d.failing.is_some())
     }
 
     /// A check's result. `kind` is what the check was; `was_verified` is
     /// whether the handle was verified when it was checked.
-    pub fn record(&mut self, domain: &str, kind: Kind, was_verified: bool, answer: Answer, probe: bool, now: i64) -> Vec<Change> {
+    pub fn record(
+        &mut self,
+        domain: &str,
+        kind: Kind,
+        was_verified: bool,
+        answer: Answer,
+        probe: bool,
+        now: i64,
+    ) -> Vec<Change> {
         let d = self.domains.entry(domain.to_owned()).or_default();
         let mut changes = Vec::new();
         let conclusive = answer != Answer::Failed;
-        let change = |pause: u8, state: State, since: i64| Change { domain: domain.to_owned(), pause, state, since };
+        let change = |pause: u8, state: State, since: i64| Change {
+            domain: domain.to_owned(),
+            pause,
+            state,
+            since,
+        };
 
         if conclusive {
             // The domain has given a different answer: it may be paused again.
@@ -189,7 +221,11 @@ impl Pauses {
                 if kind == Kind::First && !probe {
                     d.failing_sample.push(now, !conclusive, true);
                     if !d.failing_released && d.failing_sample.over(6, 10) {
-                        d.failing = Some(Failing { since: now, next_probe: now + FIRST_PROBE, answered: false });
+                        d.failing = Some(Failing {
+                            since: now,
+                            next_probe: now + FIRST_PROBE,
+                            answered: false,
+                        });
                         changes.push(change(2, State::Paused, now));
                     }
                 }
@@ -215,7 +251,11 @@ impl Pauses {
                             d.nothing_released = false;
                         }
                     } else if d.nothing_sample.over(1, 2) {
-                        d.nothing = Some(Nothing { since: now, next_probe: now + PROBE_EVERY, sample: Sample::default() });
+                        d.nothing = Some(Nothing {
+                            since: now,
+                            next_probe: now + PROBE_EVERY,
+                            sample: Sample::default(),
+                        });
                         d.nothing_sample = Sample::default();
                         changes.push(change(3, State::Paused, now));
                     }
@@ -229,22 +269,40 @@ impl Pauses {
     pub fn tick(&mut self, now: i64) -> Vec<Change> {
         let mut changes = Vec::new();
         for (name, d) in &mut self.domains {
-            if d.failing.as_ref().is_some_and(|p| now - p.since >= HOLD && !p.answered) {
+            if d.failing
+                .as_ref()
+                .is_some_and(|p| now - p.since >= HOLD && !p.answered)
+            {
                 let since = d.failing.take().map_or(now, |p| p.since);
                 d.failing_released = true;
                 d.failing_sample = Sample::default();
-                changes.push(Change { domain: name.clone(), pause: 2, state: State::Released, since });
+                changes.push(Change {
+                    domain: name.clone(),
+                    pause: 2,
+                    state: State::Released,
+                    since,
+                });
             }
             if d.nothing.as_ref().is_some_and(|p| now - p.since >= HOLD) {
                 let since = d.nothing.take().map_or(now, |p| p.since);
                 d.nothing_released = true;
                 d.nothing_sample = Sample::default();
-                changes.push(Change { domain: name.clone(), pause: 3, state: State::Released, since });
+                changes.push(Change {
+                    domain: name.clone(),
+                    pause: 3,
+                    state: State::Released,
+                    since,
+                });
             }
         }
         // Domains with nothing to remember are forgotten.
         self.domains.retain(|_, d| {
-            d.failing.is_some() || d.nothing.is_some() || d.failing_released || d.nothing_released || !d.failing_sample.0.is_empty() || !d.nothing_sample.0.is_empty()
+            d.failing.is_some()
+                || d.nothing.is_some()
+                || d.failing_released
+                || d.nothing_released
+                || !d.failing_sample.0.is_empty()
+                || !d.nothing_sample.0.is_empty()
         });
         changes
     }
@@ -273,7 +331,13 @@ impl Pauses {
 
     /// The domains under each pause, for health.
     pub fn paused(&self) -> (Vec<String>, Vec<String>) {
-        let pick = |f: fn(&Domain) -> bool| self.domains.iter().filter(|(_, d)| f(d)).map(|(n, _)| n.clone()).collect();
+        let pick = |f: fn(&Domain) -> bool| {
+            self.domains
+                .iter()
+                .filter(|(_, d)| f(d))
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
         (pick(|d| d.failing.is_some()), pick(|d| d.nothing.is_some()))
     }
 }
@@ -286,7 +350,14 @@ mod tests {
     const SEC: i64 = 1000;
     const MIN: i64 = 60_000;
 
-    fn feed(p: &mut Pauses, kind: Kind, verified: bool, answer: Answer, n: usize, start: i64) -> Vec<Change> {
+    fn feed(
+        p: &mut Pauses,
+        kind: Kind,
+        verified: bool,
+        answer: Answer,
+        n: usize,
+        start: i64,
+    ) -> Vec<Change> {
         let mut all = Vec::new();
         for i in 0..n {
             all.extend(p.record(D, kind, verified, answer, false, start + i as i64 * SEC));
@@ -300,7 +371,15 @@ mod tests {
         // Nineteen failures are not enough.
         assert!(feed(&mut p, Kind::First, false, Answer::Failed, 19, 0).is_empty());
         let started = feed(&mut p, Kind::First, false, Answer::Failed, 1, 19 * SEC);
-        assert_eq!(started, vec![Change { domain: D.into(), pause: 2, state: State::Paused, since: 19 * SEC }]);
+        assert_eq!(
+            started,
+            vec![Change {
+                domain: D.into(),
+                pause: 2,
+                state: State::Paused,
+                since: 19 * SEC
+            }]
+        );
         assert!(p.failing(D));
         // Everything waits until the first probe, a minute in.
         assert_eq!(p.admit(D, Kind::First, 30 * SEC), Admit::Wait);
@@ -309,10 +388,20 @@ mod tests {
         // One probe at a time: the next is ten minutes on.
         assert_eq!(p.admit(D, Kind::First, 81 * SEC), Admit::Wait);
         // A failing probe changes nothing.
-        assert!(p.record(D, Kind::First, false, Answer::Failed, true, 85 * SEC).is_empty());
+        assert!(
+            p.record(D, Kind::First, false, Answer::Failed, true, 85 * SEC)
+                .is_empty()
+        );
         assert_eq!(p.admit(D, Kind::First, 80 * SEC + 10 * MIN), Admit::Probe);
         // A conclusive one ends the pause, and "nothing" is conclusive.
-        let ended = p.record(D, Kind::First, false, Answer::Nothing, true, 81 * SEC + 10 * MIN);
+        let ended = p.record(
+            D,
+            Kind::First,
+            false,
+            Answer::Nothing,
+            true,
+            81 * SEC + 10 * MIN,
+        );
         assert_eq!(ended[0].state, State::Clear);
         assert!(!p.failing(D));
         assert_eq!(p.admit(D, Kind::First, 82 * SEC + 10 * MIN), Admit::Go);
@@ -323,8 +412,15 @@ mod tests {
         let mut p = Pauses::default();
         for i in 0..200 {
             // Half fail: under the 60% it takes.
-            let a = if i % 2 == 0 { Answer::Failed } else { Answer::Did };
-            assert!(p.record(D, Kind::First, false, a, false, i * SEC).is_empty());
+            let a = if i % 2 == 0 {
+                Answer::Failed
+            } else {
+                Answer::Did
+            };
+            assert!(
+                p.record(D, Kind::First, false, a, false, i * SEC)
+                    .is_empty()
+            );
         }
         assert!(!p.failing(D));
     }
@@ -361,7 +457,17 @@ mod tests {
         assert_eq!(p.admit(D, Kind::First, 26 * HOUR), Admit::Go);
         // Once it has answered, it can be.
         p.record(D, Kind::First, false, Answer::Did, false, 27 * HOUR);
-        assert!(!feed(&mut p, Kind::First, false, Answer::Failed, 40, 27 * HOUR + SEC).is_empty());
+        assert!(
+            !feed(
+                &mut p,
+                Kind::First,
+                false,
+                Answer::Failed,
+                40,
+                27 * HOUR + SEC
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -381,7 +487,10 @@ mod tests {
         assert!(feed(&mut p, Kind::First, false, Answer::Nothing, 50, 0).is_empty());
         assert!(!p.hold_demotions(D));
         let started = feed(&mut p, Kind::First, true, Answer::Nothing, 20, 60 * SEC);
-        assert_eq!(started.last().map(|c| (c.pause, c.state)), Some((3, State::Paused)));
+        assert_eq!(
+            started.last().map(|c| (c.pause, c.state)),
+            Some((3, State::Paused))
+        );
         assert!(p.hold_demotions(D));
         // First attempts go on. Confirming checks wait, apart from a probe.
         assert_eq!(p.admit(D, Kind::First, 100 * SEC), Admit::Go);
@@ -396,8 +505,16 @@ mod tests {
         feed(&mut p, Kind::First, true, Answer::Nothing, 20, 0);
         // The provider answers wrongly four times in five.
         for i in 0..100 {
-            let a = if i % 5 == 0 { Answer::Did } else { Answer::Nothing };
-            assert!(p.record(D, Kind::First, true, a, false, 30 * SEC + i * SEC).is_empty(), "ended at {i}");
+            let a = if i % 5 == 0 {
+                Answer::Did
+            } else {
+                Answer::Nothing
+            };
+            assert!(
+                p.record(D, Kind::First, true, a, false, 30 * SEC + i * SEC)
+                    .is_empty(),
+                "ended at {i}"
+            );
         }
         assert!(p.hold_demotions(D));
         // It recovers: once most of the last 200 answers are right, it ends.
@@ -414,7 +531,11 @@ mod tests {
         assert!(p.hold_demotions(D));
         // The provider turns to errors and 404s with no right answers: 55% and 45%.
         for i in 0..200 {
-            let a = if i % 20 < 11 { Answer::Failed } else { Answer::Nothing };
+            let a = if i % 20 < 11 {
+                Answer::Failed
+            } else {
+                Answer::Nothing
+            };
             p.record(D, Kind::Confirm, true, a, false, 30 * SEC + i * SEC);
         }
         assert!(p.hold_demotions(D));
@@ -424,13 +545,31 @@ mod tests {
     fn the_nothing_hold_releases_and_rearms_only_after_good_answers() {
         let mut p = Pauses::default();
         feed(&mut p, Kind::First, true, Answer::Nothing, 20, 0);
-        assert_eq!(p.tick(25 * HOUR)[0], Change { domain: D.into(), pause: 3, state: State::Released, since: 19 * SEC });
+        assert_eq!(
+            p.tick(25 * HOUR)[0],
+            Change {
+                domain: D.into(),
+                pause: 3,
+                state: State::Released,
+                since: 19 * SEC
+            }
+        );
         assert!(!p.hold_demotions(D));
         // Still answering nothing: it does not start again.
         assert!(feed(&mut p, Kind::First, true, Answer::Nothing, 60, 25 * HOUR).is_empty());
         // After a run of good answers it can.
         feed(&mut p, Kind::First, true, Answer::Did, 200, 26 * HOUR);
-        assert!(!feed(&mut p, Kind::First, true, Answer::Nothing, 150, 26 * HOUR + 300 * SEC).is_empty());
+        assert!(
+            !feed(
+                &mut p,
+                Kind::First,
+                true,
+                Answer::Nothing,
+                150,
+                26 * HOUR + 300 * SEC
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -457,6 +596,10 @@ mod tests {
         // The hold counts from when the pause began, not from the restart.
         assert_eq!(p.tick(25 * HOUR)[0].state, State::Released);
         p.restore("other.org", 3, State::Released, 0, 0);
-        assert!(feed(&mut p, Kind::First, true, Answer::Nothing, 30, 0).iter().all(|c| c.domain == D));
+        assert!(
+            feed(&mut p, Kind::First, true, Answer::Nothing, 30, 0)
+                .iter()
+                .all(|c| c.domain == D)
+        );
     }
 }

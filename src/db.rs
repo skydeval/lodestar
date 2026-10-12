@@ -18,7 +18,9 @@ pub const HANDLE_PENDING: i16 = 4;
 pub const HANDLE_NONE: i16 = 5;
 
 pub async fn connect(url: &str) -> Result<Client> {
-    let (client, conn) = tokio_postgres::connect(url, NoTls).await.context("connecting to postgres")?;
+    let (client, conn) = tokio_postgres::connect(url, NoTls)
+        .await
+        .context("connecting to postgres")?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::error!("postgres connection ended: {e}");
@@ -255,6 +257,9 @@ FROM identity_history h LEFT JOIN pds_endpoints p ON p.id = h.pds_id;
 "#;
 
 pub async fn init(client: &Client) -> Result<()> {
-    client.batch_execute(SCHEMA).await.context("creating schema")?;
+    client
+        .batch_execute(SCHEMA)
+        .await
+        .context("creating schema")?;
     Ok(())
 }

@@ -2,9 +2,9 @@
 //! JSON, for consumers on a private network. It makes no outbound request.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use axum::extract::{Path, Query, State};
@@ -57,7 +57,10 @@ impl App {
 
     fn remembered(&self, key: &str) -> Option<(StatusCode, &'static str)> {
         let misses = self.misses.lock().expect("miss cache lock");
-        misses.get(key).filter(|(at, _, _)| at.elapsed() < MISS_TTL).map(|(_, code, word)| (*code, *word))
+        misses
+            .get(key)
+            .filter(|(at, _, _)| at.elapsed() < MISS_TTL)
+            .map(|(_, code, word)| (*code, *word))
     }
 
     fn remember(&self, key: &str, code: StatusCode, word: &'static str) {
@@ -88,12 +91,19 @@ impl App {
         let mut answer = None;
         while Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(40)).await;
-            if let Some(r) = db.query_opt("SELECT outcome, did FROM resolve_requests WHERE id = $1 AND state = 2", &[&id]).await? {
+            if let Some(r) = db
+                .query_opt(
+                    "SELECT outcome, did FROM resolve_requests WHERE id = $1 AND state = 2",
+                    &[&id],
+                )
+                .await?
+            {
                 answer = Some((r.get::<_, Option<String>>(0).unwrap_or_default(), r.get(1)));
                 break;
             }
         }
-        db.execute("DELETE FROM resolve_requests WHERE id = $1", &[&id]).await?;
+        db.execute("DELETE FROM resolve_requests WHERE id = $1", &[&id])
+            .await?;
         Ok(answer)
     }
 
@@ -104,7 +114,16 @@ impl App {
         if queue::depth(db, reason, self.queue_cap).await? >= self.queue_cap {
             return Ok(false);
         }
-        queue::push(db, reason, &[queue::Item { did, kind: queue::KIND_HANDLE, listed: false }]).await?;
+        queue::push(
+            db,
+            reason,
+            &[queue::Item {
+                did,
+                kind: queue::KIND_HANDLE,
+                listed: false,
+            }],
+        )
+        .await?;
         Ok(true)
     }
 }
@@ -146,7 +165,10 @@ enum Method {
 /// takes. A `did:web` is hostname only: no path.
 fn parse_did(did: &str) -> Option<Method> {
     if let Some(id) = did.strip_prefix("did:plc:") {
-        let ok = id.len() == 24 && id.bytes().all(|c| c.is_ascii_lowercase() || (b'2'..=b'7').contains(&c));
+        let ok = id.len() == 24
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || (b'2'..=b'7').contains(&c));
         return ok.then_some(Method::Plc);
     }
     if let Some(host) = did.strip_prefix("did:web:") {
@@ -154,7 +176,8 @@ fn parse_did(did: &str) -> Option<Method> {
             Some((n, p)) => (n, Some(p)),
             None => (host, None),
         };
-        let port_ok = port.is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|c| c.is_ascii_digit()));
+        let port_ok = port
+            .is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|c| c.is_ascii_digit()));
         let name_ok = name == "localhost" || handle::normalize(name).as_deref() == Some(name);
         return (port_ok && name_ok).then_some(Method::Web);
     }
@@ -185,7 +208,11 @@ fn account_status(code: i16) -> &'static str {
 /// The key as a Multikey multibase string, whatever form the source used.
 fn multikey(stored: Option<Vec<u8>>) -> Option<String> {
     let text = encoding::key_text(&stored?)?;
-    Some(text.strip_prefix("did:key:").map(str::to_owned).unwrap_or(text))
+    Some(
+        text.strip_prefix("did:key:")
+            .map(str::to_owned)
+            .unwrap_or(text),
+    )
 }
 
 /// The PLC source's position, carried on every account answer so a
@@ -205,7 +232,10 @@ async fn source(app: &App) -> Result<(Value, bool)> {
         .await
         .context("reading the PLC source's state")?;
     Ok(match row {
-        None => (json!({ "plc": { "phase": "backfill", "cursor": 0, "tip_confirmed_at": null, "fresh": false } }), false),
+        None => (
+            json!({ "plc": { "phase": "backfill", "cursor": 0, "tip_confirmed_at": null, "fresh": false } }),
+            false,
+        ),
         Some(r) => {
             let phase: String = r.get(0);
             let fresh: bool = r.get(4);
@@ -239,7 +269,9 @@ fn account_columns() -> String {
 /// True for an account whose handle has a check of its own to make and has
 /// never had one: a consumer asking about it moves it ahead of the sweep.
 fn wants_check(r: &Row) -> bool {
-    r.get::<_, i16>(2) == db::STATUS_ACTIVE && r.get::<_, i16>(6) == db::HANDLE_PENDING && !r.get::<_, bool>(9)
+    r.get::<_, i16>(2) == db::STATUS_ACTIVE
+        && r.get::<_, i16>(6) == db::HANDLE_PENDING
+        && !r.get::<_, bool>(9)
 }
 
 /// The tables an account answer reads.
@@ -282,13 +314,19 @@ fn absent(method: Method, live: bool) -> (StatusCode, &'static str) {
     }
 }
 
-async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Result<Json<Value>, Miss> {
+async fn get_account(
+    State(app): State<Arc<App>>,
+    Path(did): Path<String>,
+) -> Result<Json<Value>, Miss> {
     let method = parse_did(&did).ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_did", None))?;
     let (src, live) = source(&app).await?;
     let row = app
         .db()
         .query_opt(
-            &format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1", account_columns()),
+            &format!(
+                "SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1",
+                account_columns()
+            ),
             &[&encoding::did_bytes(&did)],
         )
         .await?;
@@ -302,7 +340,15 @@ async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Re
             }
             match app.ask(requests::ASK_DOCUMENT, &did).await? {
                 Some((outcome, _)) if outcome == requests::STORED => {
-                    app.db().query_opt(&format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1", account_columns()), &[&encoding::did_bytes(&did)]).await?
+                    app.db()
+                        .query_opt(
+                            &format!(
+                                "SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1",
+                                account_columns()
+                            ),
+                            &[&encoding::did_bytes(&did)],
+                        )
+                        .await?
                 }
                 Some((outcome, _)) if outcome == requests::NOT_AN_ACCOUNT => {
                     app.remember(&did, StatusCode::NOT_FOUND, "not_an_account");
@@ -310,7 +356,11 @@ async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Re
                 }
                 _ => {
                     app.remember(&did, StatusCode::SERVICE_UNAVAILABLE, "unavailable");
-                    return Err(Miss(StatusCode::SERVICE_UNAVAILABLE, "unavailable", Some(src)));
+                    return Err(Miss(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        Some(src),
+                    ));
                 }
             }
         }
@@ -319,7 +369,8 @@ async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Re
     match row {
         Some(r) => {
             if wants_check(&r) {
-                app.queue_check(&encoding::did_bytes(&did), queue::REASON_LOOKUP).await?;
+                app.queue_check(&encoding::did_bytes(&did), queue::REASON_LOOKUP)
+                    .await?;
             }
             let mut v = account_json(&r);
             v["source"] = src;
@@ -335,7 +386,10 @@ async fn get_account(State(app): State<Arc<App>>, Path(did): Path<String>) -> Re
 /// A consumer's signal that what it holds looks stale. A did:web's
 /// document is fetched again now; any account's handle is checked again
 /// ahead of the sweep.
-async fn post_refresh(State(app): State<Arc<App>>, Path(did): Path<String>) -> Result<Json<Value>, Miss> {
+async fn post_refresh(
+    State(app): State<Arc<App>>,
+    Path(did): Path<String>,
+) -> Result<Json<Value>, Miss> {
     let method = parse_did(&did).ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_did", None))?;
     let key = encoding::did_bytes(&did);
     let (src, live) = source(&app).await?;
@@ -346,12 +400,23 @@ async fn post_refresh(State(app): State<Arc<App>>, Path(did): Path<String>) -> R
             None => requests::UNAVAILABLE.to_owned(),
         });
     }
-    let row = app.db().query_opt(&format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1", account_columns()), &[&key]).await?;
+    let row = app
+        .db()
+        .query_opt(
+            &format!(
+                "SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = $1",
+                account_columns()
+            ),
+            &[&key],
+        )
+        .await?;
     let Some(r) = row else {
         let (code, word) = absent(method, live);
         return Err(Miss(code, word, Some(src)));
     };
-    let queued = r.get::<_, i16>(2) == db::STATUS_ACTIVE && r.get::<_, Option<String>>(5).is_some() && app.queue_check(&key, queue::REASON_REFRESH_ASKED).await?;
+    let queued = r.get::<_, i16>(2) == db::STATUS_ACTIVE
+        && r.get::<_, Option<String>>(5).is_some()
+        && app.queue_check(&key, queue::REASON_REFRESH_ASKED).await?;
     let mut v = account_json(&r);
     v["source"] = src;
     v["refresh"] = json!({ "check_queued": queued, "document": document });
@@ -363,7 +428,10 @@ struct Batch {
     dids: Vec<String>,
 }
 
-async fn post_accounts(State(app): State<Arc<App>>, Json(batch): Json<Batch>) -> Result<Json<Value>, Miss> {
+async fn post_accounts(
+    State(app): State<Arc<App>>,
+    Json(batch): Json<Batch>,
+) -> Result<Json<Value>, Miss> {
     if batch.dids.len() > app.max_batch {
         return Err(Miss(StatusCode::BAD_REQUEST, "batch_too_large", None));
     }
@@ -381,7 +449,10 @@ async fn post_accounts(State(app): State<Arc<App>>, Json(batch): Json<Batch>) ->
     let rows = app
         .db()
         .query(
-            &format!("SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = ANY($1)", account_columns()),
+            &format!(
+                "SELECT {} FROM {ACCOUNT_FROM} WHERE a.did = ANY($1)",
+                account_columns()
+            ),
             &[&keys],
         )
         .await?;
@@ -410,7 +481,14 @@ async fn post_accounts(State(app): State<Arc<App>>, Json(batch): Json<Batch>) ->
     let db = app.db();
     let room = app.queue_cap - queue::depth(db, queue::REASON_BATCH, app.queue_cap).await?;
     wanting.truncate(room.max(0) as usize);
-    let items: Vec<queue::Item> = wanting.iter().map(|d| queue::Item { did: d.as_slice(), kind: queue::KIND_HANDLE, listed: false }).collect();
+    let items: Vec<queue::Item> = wanting
+        .iter()
+        .map(|d| queue::Item {
+            did: d.as_slice(),
+            kind: queue::KIND_HANDLE,
+            listed: false,
+        })
+        .collect();
     queue::push(db, queue::REASON_BATCH, &items).await?;
     Ok(Json(json!({ "accounts": results, "source": src })))
 }
@@ -422,7 +500,11 @@ struct Page {
     cursor: Option<i32>,
 }
 
-async fn get_history(State(app): State<Arc<App>>, Path(did): Path<String>, Query(page): Query<Page>) -> Result<Json<Value>, Miss> {
+async fn get_history(
+    State(app): State<Arc<App>>,
+    Path(did): Path<String>,
+    Query(page): Query<Page>,
+) -> Result<Json<Value>, Miss> {
     let method = parse_did(&did).ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_did", None))?;
     let key = encoding::did_bytes(&did);
     let limit = page.limit.unwrap_or(50).clamp(1, 200);
@@ -458,7 +540,11 @@ async fn get_history(State(app): State<Arc<App>>, Path(did): Path<String>, Query
         .take(limit as usize)
         .map(|r| json!({ "changed_at": r.get::<_, String>(1), "handle_claim": r.get::<_, Option<String>>(2), "pds": r.get::<_, Option<String>>(3) }))
         .collect();
-    let next_cursor = if more { rows.get(limit as usize - 1).map(|r| r.get::<_, i32>(0)) } else { None };
+    let next_cursor = if more {
+        rows.get(limit as usize - 1).map(|r| r.get::<_, i32>(0))
+    } else {
+        None
+    };
     // An identity that has never changed has no rows: its history is its
     // current state, since it was created.
     let status: i16 = account.get(0);
@@ -479,8 +565,12 @@ async fn get_history(State(app): State<Arc<App>>, Path(did): Path<String>, Query
     })))
 }
 
-async fn get_handle(State(app): State<Arc<App>>, Path(raw): Path<String>) -> Result<Json<Value>, Miss> {
-    let handle = handle::normalize(&raw).ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_handle", None))?;
+async fn get_handle(
+    State(app): State<Arc<App>>,
+    Path(raw): Path<String>,
+) -> Result<Json<Value>, Miss> {
+    let handle =
+        handle::normalize(&raw).ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_handle", None))?;
     if handle::never_resolves(&handle) {
         return Err(Miss(StatusCode::NOT_FOUND, "not_found", None));
     }
@@ -518,10 +608,15 @@ async fn get_handle(State(app): State<Arc<App>>, Path(raw): Path<String>) -> Res
                 // It resolves to an identity lodestar does not have, or has
                 // with another claim. If the PLC source is behind, lodestar
                 // may simply not have caught up.
-                Some((outcome, _)) if (outcome == requests::UNKNOWN_PLC || outcome == requests::CLAIM_DIFFERS) && !live => {
+                Some((outcome, _))
+                    if (outcome == requests::UNKNOWN_PLC || outcome == requests::CLAIM_DIFFERS)
+                        && !live =>
+                {
                     return Err(Miss(StatusCode::SERVICE_UNAVAILABLE, "syncing", Some(src)));
                 }
-                Some((outcome, _)) if outcome == requests::UNAVAILABLE => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+                Some((outcome, _)) if outcome == requests::UNAVAILABLE => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+                }
                 Some(_) => (StatusCode::NOT_FOUND, "not_found"),
                 None => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             };
@@ -550,7 +645,9 @@ async fn get_health(State(app): State<Arc<App>>) -> Result<Json<Value>, Miss> {
         );
     }
     let verification = verification(&app).await?;
-    Ok(Json(json!({ "version": env!("CARGO_PKG_VERSION"), "sources": src, "verification": verification, "storage": storage })))
+    Ok(Json(
+        json!({ "version": env!("CARGO_PKG_VERSION"), "sources": src, "verification": verification, "storage": storage }),
+    ))
 }
 
 /// What is known about verification: the worker's own report, the queue,
@@ -571,9 +668,22 @@ async fn verification(app: &App) -> Result<Value> {
         None => Value::Null,
     };
     let mut queue = serde_json::Map::new();
-    for r in db.query("SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2 ORDER BY 1, 2", &[]).await? {
-        let what = if r.get::<_, i16>(0) == queue::KIND_HANDLE { "handle" } else { "document" };
-        queue.insert(format!("{what}:{}", r.get::<_, i16>(1)), json!(r.get::<_, i64>(2)));
+    for r in db
+        .query(
+            "SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2 ORDER BY 1, 2",
+            &[],
+        )
+        .await?
+    {
+        let what = if r.get::<_, i16>(0) == queue::KIND_HANDLE {
+            "handle"
+        } else {
+            "document"
+        };
+        queue.insert(
+            format!("{what}:{}", r.get::<_, i16>(1)),
+            json!(r.get::<_, i64>(2)),
+        );
     }
     let mut laps = serde_json::Map::new();
     let mut pauses = Vec::new();
@@ -656,22 +766,61 @@ async fn get_metrics(State(app): State<Arc<App>>) -> Result<String, Miss> {
         let _ = writeln!(out, "lodestar_index_bytes{{table=\"{table}\"}} {}", r.get::<_, i64>(2));
         let _ = writeln!(out, "lodestar_table_rows_estimate{{table=\"{table}\"}} {}", r.get::<_, i64>(3));
     }
-    for r in db.query("SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2", &[]).await? {
-        let _ = writeln!(out, "lodestar_verify_due{{kind=\"{}\",reason=\"{}\"}} {}", r.get::<_, i16>(0), r.get::<_, i16>(1), r.get::<_, i64>(2));
+    for r in db
+        .query(
+            "SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2",
+            &[],
+        )
+        .await?
+    {
+        let _ = writeln!(
+            out,
+            "lodestar_verify_due{{kind=\"{}\",reason=\"{}\"}} {}",
+            r.get::<_, i16>(0),
+            r.get::<_, i16>(1),
+            r.get::<_, i64>(2)
+        );
     }
-    let counts = db.query_one("SELECT (SELECT count(*) FROM shared_handles), (SELECT count(*) FROM check_failures)", &[]).await?;
+    let counts = db
+        .query_one(
+            "SELECT (SELECT count(*) FROM shared_handles), (SELECT count(*) FROM check_failures)",
+            &[],
+        )
+        .await?;
     let _ = writeln!(out, "lodestar_shared_handles {}", counts.get::<_, i64>(0));
     let _ = writeln!(out, "lodestar_checks_failing {}", counts.get::<_, i64>(1));
-    if let Some(r) = db.query_opt("SELECT status FROM role_status WHERE role = 'verify'", &[]).await? {
+    if let Some(r) = db
+        .query_opt("SELECT status FROM role_status WHERE role = 'verify'", &[])
+        .await?
+    {
         let v: Value = serde_json::from_str(&r.get::<_, String>(0)).unwrap_or(Value::Null);
-        let _ = writeln!(out, "lodestar_verification_paused {}", i32::from(v["paused_by_controls"].as_bool().unwrap_or(false)));
+        let _ = writeln!(
+            out,
+            "lodestar_verification_paused {}",
+            i32::from(v["paused_by_controls"].as_bool().unwrap_or(false))
+        );
         if let Some(checks) = v["checks"].as_object() {
             for (result, n) in checks {
-                let _ = writeln!(out, "lodestar_checks_total{{result=\"{result}\"}} {}", n.as_u64().unwrap_or(0));
+                let _ = writeln!(
+                    out,
+                    "lodestar_checks_total{{result=\"{result}\"}} {}",
+                    n.as_u64().unwrap_or(0)
+                );
             }
         }
-        let _ = writeln!(out, "lodestar_checks_in_flight {}", v["in_flight"].as_u64().unwrap_or(0));
-        let _ = writeln!(out, "lodestar_domains_paused {}", v["domains_paused_failing"].as_array().map_or(0, Vec::len) + v["domains_paused_resolving_to_nothing"].as_array().map_or(0, Vec::len));
+        let _ = writeln!(
+            out,
+            "lodestar_checks_in_flight {}",
+            v["in_flight"].as_u64().unwrap_or(0)
+        );
+        let _ = writeln!(
+            out,
+            "lodestar_domains_paused {}",
+            v["domains_paused_failing"].as_array().map_or(0, Vec::len)
+                + v["domains_paused_resolving_to_nothing"]
+                    .as_array()
+                    .map_or(0, Vec::len)
+        );
     }
     Ok(out)
 }
@@ -699,7 +848,9 @@ pub async fn run(opts: Opts) -> Result<()> {
         .route("/ops/health", get(get_health))
         .route("/ops/metrics", get(get_metrics))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(&opts.listen).await.with_context(|| format!("listening on {}", opts.listen))?;
+    let listener = tokio::net::TcpListener::bind(&opts.listen)
+        .await
+        .with_context(|| format!("listening on {}", opts.listen))?;
     tracing::info!(listen = %opts.listen, "API role started");
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -717,7 +868,10 @@ mod tests {
 
     #[test]
     fn dids_are_validated() {
-        assert_eq!(parse_did("did:plc:ewvi7nxzyoun6zhxrhs64oiz"), Some(Method::Plc));
+        assert_eq!(
+            parse_did("did:plc:ewvi7nxzyoun6zhxrhs64oiz"),
+            Some(Method::Plc)
+        );
         assert_eq!(parse_did("did:web:example.com"), Some(Method::Web));
         assert_eq!(parse_did("did:web:example.com%3A8080"), Some(Method::Web));
         assert_eq!(parse_did("did:web:localhost%3A3000"), Some(Method::Web));
@@ -738,9 +892,16 @@ mod tests {
 
     #[test]
     fn keys_are_multikey_strings() {
-        let stored = encoding::key_bytes("did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF");
-        assert_eq!(multikey(Some(stored)).as_deref(), Some("zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF"));
-        assert_eq!(multikey(Some(encoding::key_bytes("odd key"))).as_deref(), Some("odd key"));
+        let stored =
+            encoding::key_bytes("did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF");
+        assert_eq!(
+            multikey(Some(stored)).as_deref(),
+            Some("zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF")
+        );
+        assert_eq!(
+            multikey(Some(encoding::key_bytes("odd key"))).as_deref(),
+            Some("odd key")
+        );
         assert_eq!(multikey(None), None);
     }
 

@@ -17,9 +17,9 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio_postgres::Client;
 
+use super::domains::{Admit, Kind};
 use super::limiter;
 use super::shared::{self, ClaimCounter};
-use super::domains::{Admit, Kind};
 use super::worker::{How, Shared, check_one};
 use crate::db;
 use crate::queue::{self, Item};
@@ -74,14 +74,24 @@ impl Lap<'_> {
 
     async fn save(&self, pass: &str, block: i64) -> Result<()> {
         self.client
-            .execute("UPDATE sync_state SET phase = $2, cursor = $3 WHERE source = $1", &[&self.source, &pass, &block])
+            .execute(
+                "UPDATE sync_state SET phase = $2, cursor = $3 WHERE source = $1",
+                &[&self.source, &pass, &block],
+            )
             .await
             .context("saving the lap's position")?;
         Ok(())
     }
 
     /// Check what is due in one stretch of the table. False if asked to stop.
-    async fn chunk(&mut self, pass: Pass, from: i64, to: i64, lap_started: f64, stop: &mut watch::Receiver<bool>) -> Result<bool> {
+    async fn chunk(
+        &mut self,
+        pass: Pass,
+        from: i64,
+        to: i64,
+        lap_started: f64,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<bool> {
         let rows = self
             .client
             .query(
@@ -118,10 +128,24 @@ impl Lap<'_> {
             // queue and moves on; a large domain's own walker waits where
             // it is, and its lap does not end.
             let how = loop {
-                let admit = self.shared.pauses.lock().expect("pauses lock").admit(&domain, Kind::First, chrono::Utc::now().timestamp_millis());
+                let admit = self.shared.pauses.lock().expect("pauses lock").admit(
+                    &domain,
+                    Kind::First,
+                    chrono::Utc::now().timestamp_millis(),
+                );
                 match admit {
-                    Admit::Go => break Some(How { kind: Kind::First, probe: false }),
-                    Admit::Probe => break Some(How { kind: Kind::First, probe: true }),
+                    Admit::Go => {
+                        break Some(How {
+                            kind: Kind::First,
+                            probe: false,
+                        });
+                    }
+                    Admit::Probe => {
+                        break Some(How {
+                            kind: Kind::First,
+                            probe: true,
+                        });
+                    }
                     Admit::Wait if !walker => break None,
                     Admit::Wait => {
                         tokio::select! {
@@ -150,13 +174,33 @@ impl Lap<'_> {
                     }
                 }
             };
-            self.shared.counts.lap_checks.fetch_add(1, Ordering::Relaxed);
-            tasks.spawn(check_one(self.shared.clone(), did, claim, domain, Some(permit), how));
+            self.shared
+                .counts
+                .lap_checks
+                .fetch_add(1, Ordering::Relaxed);
+            tasks.spawn(check_one(
+                self.shared.clone(),
+                did,
+                claim,
+                domain,
+                Some(permit),
+                how,
+            ));
         }
         if !overflow.is_empty() {
-            let items: Vec<Item> = overflow.iter().map(|d| Item { did: d.as_slice(), kind: queue::KIND_HANDLE, listed: false }).collect();
+            let items: Vec<Item> = overflow
+                .iter()
+                .map(|d| Item {
+                    did: d.as_slice(),
+                    kind: queue::KIND_HANDLE,
+                    listed: false,
+                })
+                .collect();
             queue::push(&self.client, queue::REASON_LAP_OVERFLOW, &items).await?;
-            self.shared.counts.lap_overflow.fetch_add(overflow.len() as u64, Ordering::Relaxed);
+            self.shared
+                .counts
+                .lap_overflow
+                .fetch_add(overflow.len() as u64, Ordering::Relaxed);
         }
         // The position moves on only once this stretch's results are in.
         while let Some(done) = tasks.join_next().await {
@@ -168,7 +212,13 @@ impl Lap<'_> {
     }
 
     /// One pass over the table from `block`. False if asked to stop.
-    async fn pass(&mut self, pass: Pass, mut block: i64, lap_started: f64, stop: &mut watch::Receiver<bool>) -> Result<bool> {
+    async fn pass(
+        &mut self,
+        pass: Pass,
+        mut block: i64,
+        lap_started: f64,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<bool> {
         loop {
             // The table grows while a lap runs.
             let blocks: i64 = self
@@ -201,13 +251,25 @@ fn self_ready(lap: &Lap<'_>) -> bool {
     lap.shared.claims_ready.load(Ordering::Acquire)
 }
 
-pub(super) async fn run(shared: Arc<Shared>, counter: Arc<RwLock<ClaimCounter>>, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
+pub(super) async fn run(
+    shared: Arc<Shared>,
+    counter: Arc<RwLock<ClaimCounter>>,
+    opts: Opts,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
     let client = db::connect(&opts.database_url).await?;
     let source = format!("lap:{}", opts.domain.as_deref().unwrap_or("general"));
     client
         .execute("INSERT INTO sync_state (source, origin, cursor, phase) VALUES ($1, '', 0, 'idle') ON CONFLICT (source) DO NOTHING", &[&source])
         .await?;
-    let mut lap = Lap { client, shared, counter, opts: &opts, source: source.clone(), ensured: HashSet::new() };
+    let mut lap = Lap {
+        client,
+        shared,
+        counter,
+        opts: &opts,
+        source: source.clone(),
+        ensured: HashSet::new(),
+    };
 
     loop {
         let row = lap
@@ -254,7 +316,10 @@ pub(super) async fn run(shared: Arc<Shared>, counter: Arc<RwLock<ClaimCounter>>,
         if let Some((first, block, lap_started)) = resume {
             let t = std::time::Instant::now();
             if first == Pass::Listed {
-                if !lap.pass(Pass::Listed, block, lap_started, &mut stop).await? {
+                if !lap
+                    .pass(Pass::Listed, block, lap_started, &mut stop)
+                    .await?
+                {
                     break;
                 }
                 lap.save(Pass::All.name(), 0).await?;

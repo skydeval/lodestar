@@ -44,24 +44,31 @@ fn derive(op: &Value) -> (Kind, Option<String>, Option<String>, Option<Vec<u8>>)
     match op.get("type").and_then(Value::as_str).unwrap_or("") {
         "plc_tombstone" => (Kind::Tombstone, None, None, None),
         "create" => {
-            let claim = op.get("handle").and_then(Value::as_str).and_then(handle::normalize);
+            let claim = op
+                .get("handle")
+                .and_then(Value::as_str)
+                .and_then(handle::normalize);
             let pds = text(op.get("service"));
             let key = text(op.get("signingKey")).map(|k| encoding::key_bytes(&k));
             (Kind::State, claim, pds, key)
         }
         "plc_operation" => {
             // The first valid at:// entry is the claim.
-            let claim = op.get("alsoKnownAs").and_then(Value::as_array).and_then(|aka| {
-                aka.iter()
-                    .filter_map(|e| e.as_str().and_then(|s| s.strip_prefix("at://")))
-                    .find_map(handle::normalize)
-            });
+            let claim = op
+                .get("alsoKnownAs")
+                .and_then(Value::as_array)
+                .and_then(|aka| {
+                    aka.iter()
+                        .filter_map(|e| e.as_str().and_then(|s| s.strip_prefix("at://")))
+                        .find_map(handle::normalize)
+                });
             let pds = op.pointer("/services/atproto_pds").and_then(|s| {
                 (s.get("type").and_then(Value::as_str) == Some("AtprotoPersonalDataServer"))
                     .then(|| text(s.get("endpoint")))
                     .flatten()
             });
-            let key = text(op.pointer("/verificationMethods/atproto")).map(|k| encoding::key_bytes(&k));
+            let key =
+                text(op.pointer("/verificationMethods/atproto")).map(|k| encoding::key_bytes(&k));
             (Kind::State, claim, pds, key)
         }
         _ => (Kind::Other, None, None, None),
@@ -71,15 +78,24 @@ fn derive(op: &Value) -> (Kind, Option<String>, Option<String>, Option<Vec<u8>>)
 /// Parse one export line.
 pub fn parse_line(line: &str) -> Result<Op> {
     let v: Value = serde_json::from_str(line).context("export line is not JSON")?;
-    let field = |name: &str| v.get(name).and_then(Value::as_str).ok_or_else(|| anyhow!("export line has no {name}"));
+    let field = |name: &str| {
+        v.get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("export line has no {name}"))
+    };
     let did = field("did")?;
     let cid = field("cid")?;
     let created_at = field("createdAt")?;
-    let seq = v.get("seq").and_then(Value::as_i64).ok_or_else(|| anyhow!("export line has no seq"))?;
+    let seq = v
+        .get("seq")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("export line has no seq"))?;
     let created_ms = DateTime::parse_from_rfc3339(created_at)
         .with_context(|| format!("bad createdAt {created_at}"))?
         .timestamp_millis();
-    let op = v.get("operation").ok_or_else(|| anyhow!("export line has no operation"))?;
+    let op = v
+        .get("operation")
+        .ok_or_else(|| anyhow!("export line has no operation"))?;
     if did.contains('\0') {
         return Err(anyhow!("export line has a NUL in its did"));
     }
@@ -88,7 +104,10 @@ pub fn parse_line(line: &str) -> Result<Op> {
         did: did.to_owned(),
         seq,
         cid: encoding::cid_bytes(cid),
-        prev: op.get("prev").and_then(Value::as_str).map(encoding::cid_bytes),
+        prev: op
+            .get("prev")
+            .and_then(Value::as_str)
+            .map(encoding::cid_bytes),
         created_at: created_at.to_owned(),
         created_ms,
         kind,

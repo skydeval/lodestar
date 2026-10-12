@@ -14,8 +14,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
-use crate::queue::{self, Item};
 use crate::encoding;
+use crate::queue::{self, Item};
 
 pub const SOURCE: &str = "jetstream";
 
@@ -45,7 +45,11 @@ enum Kind {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Parsed {
-    Event { seq: i64, did: String, kind: Kind },
+    Event {
+        seq: i64,
+        did: String,
+        kind: Kind,
+    },
     /// The server's own notice. `FutureCursor` and `OutdatedCursor` mean
     /// the cursor is lost.
     Info(String),
@@ -59,18 +63,35 @@ fn parse(text: &str) -> Parsed {
     let p = v.get("payload").unwrap_or(&v);
     let ty = p.get("$type").and_then(Value::as_str).unwrap_or("");
     match ty.rsplit('#').next().unwrap_or("") {
-        "info" => Parsed::Info(p.get("name").and_then(Value::as_str).unwrap_or("").to_owned()),
+        "info" => Parsed::Info(
+            p.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+        ),
         name @ ("identity" | "account") => {
             // The cursor is the envelope's seq, not the relay's inside.
-            let (Some(seq), Some(did)) = (p.get("seq").and_then(Value::as_i64), p.get("did").and_then(Value::as_str)) else {
+            let (Some(seq), Some(did)) = (
+                p.get("seq").and_then(Value::as_i64),
+                p.get("did").and_then(Value::as_str),
+            ) else {
                 return Parsed::Other;
             };
             let kind = if name == "identity" {
                 Kind::Identity
             } else {
-                Kind::Account { active: p.pointer("/account/active").and_then(Value::as_bool).unwrap_or(false) }
+                Kind::Account {
+                    active: p
+                        .pointer("/account/active")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                }
             };
-            Parsed::Event { seq, did: did.to_owned(), kind }
+            Parsed::Event {
+                seq,
+                did: did.to_owned(),
+                kind,
+            }
         }
         _ => Parsed::Other,
     }
@@ -87,7 +108,10 @@ fn floor_from_refusal(body: &str) -> Option<i64> {
 }
 
 fn url(opts: &Opts, cursor: Option<i64>) -> String {
-    let mut u = format!("{}/xrpc/network.bsky.jetstream.subscribeEvents?kinds=identity&kinds=account", opts.url);
+    let mut u = format!(
+        "{}/xrpc/network.bsky.jetstream.subscribeEvents?kinds=identity&kinds=account",
+        opts.url
+    );
     if let Some(c) = cursor {
         u.push_str(&format!("&cursor={c}"));
     }
@@ -113,7 +137,9 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
         if !web && !e.did.starts_with("did:plc:") {
             continue;
         }
-        let entry = seen.entry(encoding::did_bytes(&e.did)).or_insert((web, false, false));
+        let entry = seen
+            .entry(encoding::did_bytes(&e.did))
+            .or_insert((web, false, false));
         match e.kind {
             Kind::Identity => entry.1 = true,
             Kind::Account { active } => entry.2 |= active,
@@ -122,11 +148,18 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
     let dids: Vec<&Vec<u8>> = seen.keys().collect();
 
     let tx = client.transaction().await?;
-    let known: HashSet<Vec<u8>> =
-        tx.query("SELECT did FROM accounts WHERE did = ANY($1)", &[&dids]).await?.iter().map(|r| r.get(0)).collect();
+    let known: HashSet<Vec<u8>> = tx
+        .query("SELECT did FROM accounts WHERE did = ANY($1)", &[&dids])
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
     // Handle checks wait for the PLC source to reach the tip.
     let plc_live = tx
-        .query_opt("SELECT 1 FROM sync_state WHERE source = 'plc' AND phase = 'live'", &[])
+        .query_opt(
+            "SELECT 1 FROM sync_state WHERE source = 'plc' AND phase = 'live'",
+            &[],
+        )
         .await?
         .is_some();
     let room = opts.event_cap - queue::depth(&tx, queue::REASON_EVENT, opts.event_cap).await?;
@@ -141,17 +174,30 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
         if *web {
             // A did:web's state comes from its document: fetch it, whether
             // or not lodestar has seen it before.
-            work.push(Item { did: did.as_slice(), kind: queue::KIND_DOCUMENT, listed: *active });
+            work.push(Item {
+                did: did.as_slice(),
+                kind: queue::KIND_DOCUMENT,
+                listed: *active,
+            });
         } else if has_row && *identity && plc_live {
             // A did:plc's state comes only from PLC; the event asks for its
             // handle to be checked again. One with no row is left to PLC.
-            work.push(Item { did: did.as_slice(), kind: queue::KIND_HANDLE, listed: false });
+            work.push(Item {
+                did: did.as_slice(),
+                kind: queue::KIND_HANDLE,
+                listed: false,
+            });
         }
     }
     work.truncate(room.max(0) as usize);
     queue::push(&tx, queue::REASON_EVENT, &work).await?;
     if !mark.is_empty() {
-        tx.execute("UPDATE accounts SET listed = true WHERE did = ANY($1) AND NOT listed", &[&mark]).await.context("marking listed")?;
+        tx.execute(
+            "UPDATE accounts SET listed = true WHERE did = ANY($1) AND NOT listed",
+            &[&mark],
+        )
+        .await
+        .context("marking listed")?;
     }
     tx.execute(
         "INSERT INTO sync_state (source, origin, cursor, phase, tip_at) VALUES ($1, $2, $3, 'live', now()) \
@@ -165,13 +211,23 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
 }
 
 async fn confirm_tip(client: &Client) -> Result<()> {
-    client.execute("UPDATE sync_state SET tip_at = now() WHERE source = $1", &[&SOURCE]).await?;
+    client
+        .execute(
+            "UPDATE sync_state SET tip_at = now() WHERE source = $1",
+            &[&SOURCE],
+        )
+        .await?;
     Ok(())
 }
 
 /// The cursor is lost: ask for a new walk, since events may have been missed.
 async fn ask_for_walk(client: &Client) -> Result<()> {
-    client.execute("UPDATE sync_state SET phase = 'due' WHERE source = $1", &[&crate::walk::SOURCE]).await?;
+    client
+        .execute(
+            "UPDATE sync_state SET phase = 'due' WHERE source = $1",
+            &[&crate::walk::SOURCE],
+        )
+        .await?;
     Ok(())
 }
 
@@ -183,21 +239,43 @@ enum End {
     Lost(String),
 }
 
-async fn session(client: &mut Client, opts: &Opts, cursor: &mut Option<i64>, stop: &mut watch::Receiver<bool>) -> Result<End> {
-    let mut request = url(opts, *cursor).as_str().into_client_request().context("building the subscription request")?;
-    request.headers_mut().insert("Sec-WebSocket-Protocol", HeaderValue::from_static("xrpc.v1.json"));
+async fn session(
+    client: &mut Client,
+    opts: &Opts,
+    cursor: &mut Option<i64>,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<End> {
+    let mut request = url(opts, *cursor)
+        .as_str()
+        .into_client_request()
+        .context("building the subscription request")?;
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static("xrpc.v1.json"),
+    );
     if let Ok(v) = HeaderValue::from_str(&opts.user_agent) {
         request.headers_mut().insert("User-Agent", v);
     }
-    let mut ws = match tokio::time::timeout(Duration::from_secs(30), tokio_tungstenite::connect_async(request)).await {
+    let mut ws = match tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    {
         Ok(Ok((ws, _))) => ws,
         Ok(Err(WsError::Http(resp))) => {
-            let body = resp.body().as_ref().map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
+            let body = resp
+                .body()
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
             if let Some(floor) = floor_from_refusal(&body) {
                 // Refused with the floor: resume from it.
                 *cursor = Some(floor);
                 ask_for_walk(client).await?;
-                return Ok(End::Again(format!("cursor refused; resuming from the floor at {floor}")));
+                return Ok(End::Again(format!(
+                    "cursor refused; resuming from the floor at {floor}"
+                )));
             }
             return Ok(End::Again(format!("refused with {}", resp.status())));
         }
@@ -273,7 +351,12 @@ async fn session(client: &mut Client, opts: &Opts, cursor: &mut Option<i64>, sto
 }
 
 pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
-    let row = client.query_opt("SELECT origin, cursor FROM sync_state WHERE source = $1", &[&SOURCE]).await?;
+    let row = client
+        .query_opt(
+            "SELECT origin, cursor FROM sync_state WHERE source = $1",
+            &[&SOURCE],
+        )
+        .await?;
     let mut cursor: Option<i64> = match row {
         Some(r) if r.get::<_, String>(0) == opts.url => Some(r.get(1)),
         Some(r) => {
@@ -328,12 +411,30 @@ mod tests {
         let account = r#"{"$type":"message","payload":{"$type":"network.bsky.jetstream.subscribeEvents#account","account":{"active":false,"did":"did:plc:by5ofb2yfxley72ma7iqwx5j","seq":34413048622,"status":"deleted","time":"2026-10-12T09:39:13.492Z"},"did":"did:plc:by5ofb2yfxley72ma7iqwx5j","seq":26894478980,"time":"2026-10-12T09:39:13.755960Z"}}"#;
         assert_eq!(
             parse(account),
-            Parsed::Event { seq: 26894478980, did: "did:plc:by5ofb2yfxley72ma7iqwx5j".into(), kind: Kind::Account { active: false } }
+            Parsed::Event {
+                seq: 26894478980,
+                did: "did:plc:by5ofb2yfxley72ma7iqwx5j".into(),
+                kind: Kind::Account { active: false }
+            }
         );
         let identity = r#"{"$type":"message","payload":{"$type":"network.bsky.jetstream.subscribeEvents#identity","identity":{"did":"did:web:example.com","seq":5},"did":"did:web:example.com","seq":77}}"#;
-        assert_eq!(parse(identity), Parsed::Event { seq: 77, did: "did:web:example.com".into(), kind: Kind::Identity });
+        assert_eq!(
+            parse(identity),
+            Parsed::Event {
+                seq: 77,
+                did: "did:web:example.com".into(),
+                kind: Kind::Identity
+            }
+        );
         let active = r#"{"payload":{"$type":"x#account","account":{"active":true},"did":"did:plc:a","seq":1}}"#;
-        assert_eq!(parse(active), Parsed::Event { seq: 1, did: "did:plc:a".into(), kind: Kind::Account { active: true } });
+        assert_eq!(
+            parse(active),
+            Parsed::Event {
+                seq: 1,
+                did: "did:plc:a".into(),
+                kind: Kind::Account { active: true }
+            }
+        );
     }
 
     #[test]
@@ -341,15 +442,24 @@ mod tests {
         let info = r#"{"$type":"message","payload":{"$type":"network.bsky.jetstream.subscribeEvents#info","message":"…","name":"FutureCursor"}}"#;
         assert_eq!(parse(info), Parsed::Info("FutureCursor".into()));
         assert_eq!(parse("not json"), Parsed::Other);
-        assert_eq!(parse(r#"{"payload":{"$type":"x#commit","seq":1,"did":"did:plc:a"}}"#), Parsed::Other);
-        assert_eq!(parse(r#"{"payload":{"$type":"x#identity","did":"did:plc:a"}}"#), Parsed::Other);
+        assert_eq!(
+            parse(r#"{"payload":{"$type":"x#commit","seq":1,"did":"did:plc:a"}}"#),
+            Parsed::Other
+        );
+        assert_eq!(
+            parse(r#"{"payload":{"$type":"x#identity","did":"did:plc:a"}}"#),
+            Parsed::Other
+        );
     }
 
     #[test]
     fn the_floor_is_read_from_a_refusal() {
         let body = r#"{"error":"CursorTooOld","message":"subscribe: cursor too old: cursor 1 below lookback floor 26847088910; re-backfill from your last seq"}"#;
         assert_eq!(floor_from_refusal(body), Some(26847088910));
-        assert_eq!(floor_from_refusal(r#"{"error":"Other","message":"lookback floor 5"}"#), None);
+        assert_eq!(
+            floor_from_refusal(r#"{"error":"Other","message":"lookback floor 5"}"#),
+            None
+        );
         assert_eq!(floor_from_refusal("CursorTooOld"), None);
     }
 }

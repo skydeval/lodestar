@@ -47,32 +47,58 @@ pub fn read(did: &str, body: &str) -> Option<Document> {
         return None;
     }
     // The first valid handle among the at:// entries.
-    let claim = v.get("alsoKnownAs").and_then(Value::as_array).and_then(|aka| {
-        aka.iter().filter_map(|e| e.as_str().and_then(|s| s.strip_prefix("at://"))).find_map(handle::normalize)
-    });
-    let ends = |entry: &Value, suffix: &str| entry.get("id").and_then(Value::as_str).is_some_and(|id| id.ends_with(suffix));
-    let pds = v.get("service").and_then(Value::as_array).and_then(|services| {
-        services
-            .iter()
-            .find(|s| ends(s, "#atproto_pds") && s.get("type").and_then(Value::as_str) == Some("AtprotoPersonalDataServer"))
-            .and_then(|s| s.get("serviceEndpoint").and_then(Value::as_str))
-            .and_then(storable)
-    });
-    let key = v.get("verificationMethod").and_then(Value::as_array).and_then(|methods| {
-        methods.iter().filter(|m| ends(m, "#atproto") && m.get("controller").and_then(Value::as_str) == Some(did)).find_map(|m| {
-            let multibase = m.get("publicKeyMultibase").and_then(Value::as_str)?;
-            match m.get("type").and_then(Value::as_str)? {
-                "Multikey" => storable(multibase).map(|k| encoding::key_bytes(&format!("did:key:{k}"))),
-                // The older form carries the bare key: it gains its prefix.
-                other => {
-                    let raw = encoding::b58_decode(multibase.strip_prefix('z')?)?;
-                    let mut bytes = legacy_prefix(other)?.to_vec();
-                    bytes.extend_from_slice(&raw);
-                    Some(bytes)
-                }
-            }
-        })
-    });
+    let claim = v
+        .get("alsoKnownAs")
+        .and_then(Value::as_array)
+        .and_then(|aka| {
+            aka.iter()
+                .filter_map(|e| e.as_str().and_then(|s| s.strip_prefix("at://")))
+                .find_map(handle::normalize)
+        });
+    let ends = |entry: &Value, suffix: &str| {
+        entry
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.ends_with(suffix))
+    };
+    let pds = v
+        .get("service")
+        .and_then(Value::as_array)
+        .and_then(|services| {
+            services
+                .iter()
+                .find(|s| {
+                    ends(s, "#atproto_pds")
+                        && s.get("type").and_then(Value::as_str)
+                            == Some("AtprotoPersonalDataServer")
+                })
+                .and_then(|s| s.get("serviceEndpoint").and_then(Value::as_str))
+                .and_then(storable)
+        });
+    let key = v
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .and_then(|methods| {
+            methods
+                .iter()
+                .filter(|m| {
+                    ends(m, "#atproto") && m.get("controller").and_then(Value::as_str) == Some(did)
+                })
+                .find_map(|m| {
+                    let multibase = m.get("publicKeyMultibase").and_then(Value::as_str)?;
+                    match m.get("type").and_then(Value::as_str)? {
+                        "Multikey" => storable(multibase)
+                            .map(|k| encoding::key_bytes(&format!("did:key:{k}"))),
+                        // The older form carries the bare key: it gains its prefix.
+                        other => {
+                            let raw = encoding::b58_decode(multibase.strip_prefix('z')?)?;
+                            let mut bytes = legacy_prefix(other)?.to_vec();
+                            bytes.extend_from_slice(&raw);
+                            Some(bytes)
+                        }
+                    }
+                })
+        });
     Some(Document { claim, pds, key })
 }
 
@@ -91,21 +117,44 @@ pub struct Rules {
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules { refresh_secs: 86_400.0, grace_secs: 14.0 * 86_400.0 }
+        Rules {
+            refresh_secs: 86_400.0,
+            grace_secs: 14.0 * 86_400.0,
+        }
     }
 }
 
-async fn intern(tx: &tokio_postgres::Transaction<'_>, endpoint: Option<&str>) -> Result<Option<i32>> {
+async fn intern(
+    tx: &tokio_postgres::Transaction<'_>,
+    endpoint: Option<&str>,
+) -> Result<Option<i32>> {
     let Some(e) = endpoint else {
         return Ok(None);
     };
-    tx.execute("INSERT INTO pds_endpoints (endpoint) VALUES ($1) ON CONFLICT (md5(endpoint)) DO NOTHING", &[&e]).await?;
-    Ok(Some(tx.query_one("SELECT id FROM pds_endpoints WHERE md5(endpoint) = md5($1)", &[&e]).await?.get(0)))
+    tx.execute(
+        "INSERT INTO pds_endpoints (endpoint) VALUES ($1) ON CONFLICT (md5(endpoint)) DO NOTHING",
+        &[&e],
+    )
+    .await?;
+    Ok(Some(
+        tx.query_one(
+            "SELECT id FROM pds_endpoints WHERE md5(endpoint) = md5($1)",
+            &[&e],
+        )
+        .await?
+        .get(0),
+    ))
 }
 
 /// Store the outcome of fetching a document. `listed` is the mark its
 /// queue entry carried.
-pub async fn apply(client: &mut Client, rules: &Rules, did: &[u8], fetched: Option<&Document>, listed: bool) -> Result<()> {
+pub async fn apply(
+    client: &mut Client,
+    rules: &Rules,
+    did: &[u8],
+    fetched: Option<&Document>,
+    listed: bool,
+) -> Result<()> {
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
@@ -174,9 +223,22 @@ pub async fn apply(client: &mut Client, rules: &Rules, did: &[u8], fetched: Opti
             if claim_changed {
                 // A new claim never inherits an old claim's failures, and
                 // is checked ahead of everything else.
-                tx.execute("DELETE FROM check_failures WHERE did = $1 AND kind = 0", &[&did]).await?;
+                tx.execute(
+                    "DELETE FROM check_failures WHERE did = $1 AND kind = 0",
+                    &[&did],
+                )
+                .await?;
                 if handle_status == db::HANDLE_PENDING {
-                    queue::push(&tx, queue::REASON_CLAIM, &[Item { did, kind: queue::KIND_HANDLE, listed: false }]).await?;
+                    queue::push(
+                        &tx,
+                        queue::REASON_CLAIM,
+                        &[Item {
+                            did,
+                            kind: queue::KIND_HANDLE,
+                            listed: false,
+                        }],
+                    )
+                    .await?;
                 }
             }
             tx.execute(
@@ -186,7 +248,11 @@ pub async fn apply(client: &mut Client, rules: &Rules, did: &[u8], fetched: Opti
                 &[&did],
             )
             .await?;
-            tx.execute("DELETE FROM check_failures WHERE did = $1 AND kind = 1", &[&did]).await?;
+            tx.execute(
+                "DELETE FROM check_failures WHERE did = $1 AND kind = 1",
+                &[&did],
+            )
+            .await?;
         }
         None => {
             if row.is_none() {
@@ -199,7 +265,11 @@ pub async fn apply(client: &mut Client, rules: &Rules, did: &[u8], fetched: Opti
                 .await
                 .context("inserting the unresolvable account")?;
             } else if listed {
-                tx.execute("UPDATE accounts SET listed = true WHERE did = $1 AND NOT listed", &[&did]).await?;
+                tx.execute(
+                    "UPDATE accounts SET listed = true WHERE did = $1 AND NOT listed",
+                    &[&did],
+                )
+                .await?;
             }
             tx.execute(
                 "INSERT INTO web_documents (did, last_fetch_at) VALUES ($1, now()) ON CONFLICT (did) DO UPDATE SET last_fetch_at = now()",
@@ -228,14 +298,28 @@ pub async fn apply(client: &mut Client, rules: &Rules, did: &[u8], fetched: Opti
                     "UPDATE accounts SET status = $2, handle_checked_at = NULL, \
                          handle_status = CASE WHEN handle_claim IS NULL THEN $4 ELSE $3 END \
                      WHERE did = $1 AND status = $5",
-                    &[&did, &db::STATUS_UNRESOLVABLE, &db::HANDLE_PENDING, &db::HANDLE_NONE, &db::STATUS_ACTIVE],
+                    &[
+                        &did,
+                        &db::STATUS_UNRESOLVABLE,
+                        &db::HANDLE_PENDING,
+                        &db::HANDLE_NONE,
+                        &db::STATUS_ACTIVE,
+                    ],
                 )
                 .await?;
-                tx.execute("DELETE FROM check_failures WHERE did = $1 AND kind = 0", &[&did]).await?;
+                tx.execute(
+                    "DELETE FROM check_failures WHERE did = $1 AND kind = 0",
+                    &[&did],
+                )
+                .await?;
             }
         }
     }
-    tx.execute("DELETE FROM verify_due WHERE did = $1 AND kind = $2", &[&did, &queue::KIND_DOCUMENT]).await?;
+    tx.execute(
+        "DELETE FROM verify_due WHERE did = $1 AND kind = $2",
+        &[&did, &queue::KIND_DOCUMENT],
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -250,7 +334,15 @@ mod tests {
     fn hosts() {
         assert_eq!(host("did:web:example.com"), Some("example.com"));
         assert_eq!(host("did:web:sub.example.co.uk"), Some("sub.example.co.uk"));
-        for bad in ["did:web:example.com:path", "did:web:example.com%3A8080", "did:web:Example.com", "did:web:localhost", "did:web:box.local", "did:plc:abc", "did:web:"] {
+        for bad in [
+            "did:web:example.com:path",
+            "did:web:example.com%3A8080",
+            "did:web:Example.com",
+            "did:web:localhost",
+            "did:web:box.local",
+            "did:plc:abc",
+            "did:web:",
+        ] {
             assert_eq!(host(bad), None, "{bad}");
         }
     }
@@ -295,7 +387,8 @@ mod tests {
     #[test]
     fn a_legacy_key_gains_its_prefix() {
         // The same key as above, written the older way: the bare key bytes.
-        let full = encoding::b58_decode("Q3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF").unwrap();
+        let full =
+            encoding::b58_decode("Q3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF").unwrap();
         assert_eq!(&full[..2], &[0xe7, 0x01]);
         let bare = format!("z{}", encoding::b58_encode(&full[2..]));
         let body = format!(

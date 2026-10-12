@@ -44,11 +44,39 @@ impl Limits {
     pub fn profile(name: &str) -> Self {
         let mut overrides = HashMap::new();
         if name == "hobbyist" {
-            overrides.insert("bsky.social".to_owned(), DomainLimit { rate: 20.0, in_flight: 8 });
-            Limits { default: DomainLimit { rate: 1.0, in_flight: 4 }, overrides, global_rate: 40.0, global_in_flight: 24 }
+            overrides.insert(
+                "bsky.social".to_owned(),
+                DomainLimit {
+                    rate: 20.0,
+                    in_flight: 8,
+                },
+            );
+            Limits {
+                default: DomainLimit {
+                    rate: 1.0,
+                    in_flight: 4,
+                },
+                overrides,
+                global_rate: 40.0,
+                global_in_flight: 24,
+            }
         } else {
-            overrides.insert("bsky.social".to_owned(), DomainLimit { rate: 320.0, in_flight: 100 });
-            Limits { default: DomainLimit { rate: 1.0, in_flight: 8 }, overrides, global_rate: 400.0, global_in_flight: 160 }
+            overrides.insert(
+                "bsky.social".to_owned(),
+                DomainLimit {
+                    rate: 320.0,
+                    in_flight: 100,
+                },
+            );
+            Limits {
+                default: DomainLimit {
+                    rate: 1.0,
+                    in_flight: 8,
+                },
+                overrides,
+                global_rate: 400.0,
+                global_in_flight: 160,
+            }
         }
     }
 
@@ -57,11 +85,16 @@ impl Limits {
         for spec in specs {
             let parsed = spec.split_once('=').and_then(|(d, v)| {
                 let (rate, cap) = v.split_once(':')?;
-                Some((d.trim().to_ascii_lowercase(), rate.parse::<f64>().ok()?, cap.parse::<usize>().ok()?))
+                Some((
+                    d.trim().to_ascii_lowercase(),
+                    rate.parse::<f64>().ok()?,
+                    cap.parse::<usize>().ok()?,
+                ))
             });
             match parsed {
                 Some((domain, rate, in_flight)) if rate > 0.0 && in_flight > 0 => {
-                    self.overrides.insert(domain, DomainLimit { rate, in_flight });
+                    self.overrides
+                        .insert(domain, DomainLimit { rate, in_flight });
                 }
                 _ => anyhow::bail!("a domain rate is written domain=rate:in_flight, not {spec}"),
             }
@@ -83,7 +116,11 @@ struct Bucket {
 
 impl Bucket {
     fn new(rate: f64, now: Instant) -> Self {
-        Bucket { tokens: 0.0, rate, at: now }
+        Bucket {
+            tokens: 0.0,
+            rate,
+            at: now,
+        }
     }
 
     /// At most one second of rate, and never less than room for one check.
@@ -92,13 +129,18 @@ impl Bucket {
     }
 
     fn fill(&mut self, now: Instant) {
-        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f64() * self.rate).min(self.depth());
+        self.tokens =
+            (self.tokens + now.duration_since(self.at).as_secs_f64() * self.rate).min(self.depth());
         self.at = now;
     }
 
     /// How long until a token is there. Zero if one is.
     fn wait(&self) -> Duration {
-        if self.tokens >= 1.0 { Duration::ZERO } else { Duration::from_secs_f64((1.0 - self.tokens) / self.rate) }
+        if self.tokens >= 1.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64((1.0 - self.tokens) / self.rate)
+        }
     }
 }
 
@@ -162,13 +204,23 @@ impl Limiter {
         let global = Bucket::new(limits.global_rate, now);
         Limiter(Arc::new(Inner {
             limits,
-            state: Mutex::new(State { domains: HashMap::new(), global, global_in_flight: 0, swept: now }),
+            state: Mutex::new(State {
+                domains: HashMap::new(),
+                global,
+                global_in_flight: 0,
+                swept: now,
+            }),
             freed: Notify::new(),
         }))
     }
 
     fn limit(&self, domain: &str) -> DomainLimit {
-        self.0.limits.overrides.get(domain).copied().unwrap_or(self.0.limits.default)
+        self.0
+            .limits
+            .overrides
+            .get(domain)
+            .copied()
+            .unwrap_or(self.0.limits.default)
     }
 
     fn attempt(&self, domain: &str) -> Try {
@@ -176,19 +228,26 @@ impl Limiter {
         let limit = self.limit(domain);
         let mut s = self.0.state.lock().expect("limiter lock");
         if now.duration_since(s.swept) > IDLE {
-            s.domains.retain(|_, d| d.in_flight > 0 || now.duration_since(d.used) < IDLE || d.hold_until.is_some_and(|h| h > now));
+            s.domains.retain(|_, d| {
+                d.in_flight > 0
+                    || now.duration_since(d.used) < IDLE
+                    || d.hold_until.is_some_and(|h| h > now)
+            });
             s.swept = now;
         }
         s.global.fill(now);
         let global_wait = s.global.wait();
         let global_full = s.global_in_flight >= self.0.limits.global_in_flight;
-        let d = s.domains.entry(domain.to_owned()).or_insert_with(|| Domain {
-            bucket: Bucket::new(limit.rate, now),
-            cap: limit.in_flight,
-            in_flight: 0,
-            hold_until: None,
-            used: now,
-        });
+        let d = s
+            .domains
+            .entry(domain.to_owned())
+            .or_insert_with(|| Domain {
+                bucket: Bucket::new(limit.rate, now),
+                cap: limit.in_flight,
+                in_flight: 0,
+                hold_until: None,
+                used: now,
+            });
         d.used = now;
         d.bucket.fill(now);
         if let Some(until) = d.hold_until {
@@ -212,7 +271,10 @@ impl Limiter {
     }
 
     fn permit(&self, domain: &str) -> Permit {
-        Permit { inner: self.0.clone(), domain: domain.to_owned() }
+        Permit {
+            inner: self.0.clone(),
+            domain: domain.to_owned(),
+        }
     }
 
     /// Take a slot for a check of `domain` if one is free right now.
@@ -247,13 +309,16 @@ impl Limiter {
         let now = Instant::now();
         let limit = self.limit(domain);
         let mut s = self.0.state.lock().expect("limiter lock");
-        let d = s.domains.entry(domain.to_owned()).or_insert_with(|| Domain {
-            bucket: Bucket::new(limit.rate, now),
-            cap: limit.in_flight,
-            in_flight: 0,
-            hold_until: None,
-            used: now,
-        });
+        let d = s
+            .domains
+            .entry(domain.to_owned())
+            .or_insert_with(|| Domain {
+                bucket: Bucket::new(limit.rate, now),
+                cap: limit.in_flight,
+                in_flight: 0,
+                hold_until: None,
+                used: now,
+            });
         let until = now + wait;
         if d.hold_until.is_none_or(|h| h < until) {
             d.hold_until = Some(until);
@@ -264,13 +329,20 @@ impl Limiter {
     pub fn is_held(&self, domain: &str) -> bool {
         let now = Instant::now();
         let s = self.0.state.lock().expect("limiter lock");
-        s.domains.get(domain).and_then(|d| d.hold_until).is_some_and(|until| until > now)
+        s.domains
+            .get(domain)
+            .and_then(|d| d.hold_until)
+            .is_some_and(|until| until > now)
     }
 
     /// Domains whose in-flight cap is full, for health.
     pub fn full_domains(&self) -> Vec<String> {
         let s = self.0.state.lock().expect("limiter lock");
-        s.domains.iter().filter(|(_, d)| d.in_flight >= d.cap).map(|(name, _)| name.clone()).collect()
+        s.domains
+            .iter()
+            .filter(|(_, d)| d.in_flight >= d.cap)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 }
 
@@ -279,7 +351,12 @@ mod tests {
     use super::*;
 
     fn limits(rate: f64, in_flight: usize) -> Limits {
-        Limits { default: DomainLimit { rate, in_flight }, overrides: HashMap::new(), global_rate: 1000.0, global_in_flight: 1000 }
+        Limits {
+            default: DomainLimit { rate, in_flight },
+            overrides: HashMap::new(),
+            global_rate: 1000.0,
+            global_in_flight: 1000,
+        }
     }
 
     #[test]
@@ -351,7 +428,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_global_cap_covers_every_domain() {
-        let l = Limiter::new(Limits { global_in_flight: 2, ..limits(100.0, 8) });
+        let l = Limiter::new(Limits {
+            global_in_flight: 2,
+            ..limits(100.0, 8)
+        });
         tokio::time::sleep(Duration::from_secs(1)).await;
         let _a = l.acquire("one.com").await;
         let _b = l.acquire("two.com").await;
@@ -363,18 +443,57 @@ mod tests {
         let small = Limits::profile("hobbyist");
         assert!(small.global_rate < Limits::profile("vps").global_rate);
         assert_eq!(small.overrides["bsky.social"].rate, 20.0);
-        let l = Limits::profile("vps").with_overrides(&["Example.com=5:20".to_owned(), "bsky.social=160:60".to_owned()]).unwrap();
-        assert_eq!(l.overrides["example.com"], DomainLimit { rate: 5.0, in_flight: 20 });
-        assert_eq!(l.overrides["bsky.social"], DomainLimit { rate: 160.0, in_flight: 60 });
-        for bad in ["example.com", "example.com=5", "example.com=0:5", "example.com=x:y"] {
-            assert!(Limits::profile("vps").with_overrides(&[bad.to_owned()]).is_err(), "{bad}");
+        let l = Limits::profile("vps")
+            .with_overrides(&[
+                "Example.com=5:20".to_owned(),
+                "bsky.social=160:60".to_owned(),
+            ])
+            .unwrap();
+        assert_eq!(
+            l.overrides["example.com"],
+            DomainLimit {
+                rate: 5.0,
+                in_flight: 20
+            }
+        );
+        assert_eq!(
+            l.overrides["bsky.social"],
+            DomainLimit {
+                rate: 160.0,
+                in_flight: 60
+            }
+        );
+        for bad in [
+            "example.com",
+            "example.com=5",
+            "example.com=0:5",
+            "example.com=x:y",
+        ] {
+            assert!(
+                Limits::profile("vps")
+                    .with_overrides(&[bad.to_owned()])
+                    .is_err(),
+                "{bad}"
+            );
         }
     }
 
     #[test]
     fn the_largest_provider_has_its_own_limit() {
         let l = Limiter::new(Limits::default());
-        assert_eq!(l.limit("bsky.social"), DomainLimit { rate: 320.0, in_flight: 100 });
-        assert_eq!(l.limit("example.com"), DomainLimit { rate: 1.0, in_flight: 8 });
+        assert_eq!(
+            l.limit("bsky.social"),
+            DomainLimit {
+                rate: 320.0,
+                in_flight: 100
+            }
+        );
+        assert_eq!(
+            l.limit("example.com"),
+            DomainLimit {
+                rate: 1.0,
+                in_flight: 8
+            }
+        );
     }
 }

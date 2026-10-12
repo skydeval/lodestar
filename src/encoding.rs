@@ -124,7 +124,9 @@ pub fn did_text(bytes: &[u8]) -> Option<String> {
 /// `did:key:z…`, or the text as given when it is not one.
 pub fn key_bytes(key: &str) -> Vec<u8> {
     if let Some(raw) = key.strip_prefix("did:key:z").and_then(b58_decode) {
-        if raw.first().is_some_and(|b| *b != KEY_TEXT) && format!("did:key:z{}", b58_encode(&raw)) == key {
+        if raw.first().is_some_and(|b| *b != KEY_TEXT)
+            && format!("did:key:z{}", b58_encode(&raw)) == key
+        {
             return raw;
         }
     }
@@ -152,7 +154,9 @@ pub fn cid_bytes(s: &str) -> Vec<u8> {
         Some(("z", rest)) => b58_decode(rest),
         _ => None,
     };
-    decoded.filter(|d| !d.is_empty()).unwrap_or_else(|| s.as_bytes().to_vec())
+    decoded
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| s.as_bytes().to_vec())
 }
 
 #[cfg(test)]
@@ -170,7 +174,11 @@ mod tests {
 
     #[test]
     fn other_dids_keep_their_text() {
-        for did in ["did:web:example.com", "did:plc:short", "did:plc:EWVI7NXZYOUN6ZHXRHS64OIZ"] {
+        for did in [
+            "did:web:example.com",
+            "did:plc:short",
+            "did:plc:EWVI7NXZYOUN6ZHXRHS64OIZ",
+        ] {
             let b = did_bytes(did);
             assert_eq!(b[0], 1);
             assert_eq!(did_text(&b).as_deref(), Some(did));

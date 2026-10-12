@@ -31,7 +31,11 @@ struct Cli {
 
 #[derive(Args)]
 struct IngestArgs {
-    #[arg(long, env = "LODESTAR_PLC_URL", default_value = "https://plc.directory")]
+    #[arg(
+        long,
+        env = "LODESTAR_PLC_URL",
+        default_value = "https://plc.directory"
+    )]
     plc_url: String,
     /// Operations a page, at most 1,000.
     #[arg(long, default_value_t = 1000)]
@@ -56,7 +60,11 @@ struct IngestArgs {
     plc_max_pages: u64,
 
     /// The Jetstream instance.
-    #[arg(long, env = "LODESTAR_JETSTREAM_URL", default_value = "wss://jetstream.us-east.bsky.network")]
+    #[arg(
+        long,
+        env = "LODESTAR_JETSTREAM_URL",
+        default_value = "wss://jetstream.us-east.bsky.network"
+    )]
     jetstream_url: String,
     /// Reconnect when the subscription has been silent this long.
     #[arg(long, default_value_t = 300)]
@@ -69,7 +77,11 @@ struct IngestArgs {
     no_jetstream: bool,
 
     /// The relay whose listing is walked.
-    #[arg(long, env = "LODESTAR_RELAY_URL", default_value = "https://relay1.us-east.bsky.network")]
+    #[arg(
+        long,
+        env = "LODESTAR_RELAY_URL",
+        default_value = "https://relay1.us-east.bsky.network"
+    )]
     relay_url: String,
     /// Least time between listing requests.
     #[arg(long, default_value_t = 250)]
@@ -172,20 +184,29 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with_writer(std::io::stderr)
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     if let Cmd::CheckHandle { handles, resolver } = &cli.cmd {
-        let checker = verify::check::Checker::new(resolver, &cli.user_agent, &verify::check::Limits::default())?;
+        let checker = verify::check::Checker::new(
+            resolver,
+            &cli.user_agent,
+            &verify::check::Limits::default(),
+        )?;
         for h in handles {
             match handle::normalize(h) {
                 None => println!("{h}: not a valid handle"),
                 Some(h) if handle::never_resolves(&h) => println!("{h}: never resolved"),
                 Some(h) => {
                     let c = checker.check(&h).await;
-                    println!("{h}: {:?} by_dns={} retry_after={:?} took={:?}", c.outcome, c.by_dns, c.retry_after, c.took);
+                    println!(
+                        "{h}: {:?} by_dns={} retry_after={:?} took={:?}",
+                        c.outcome, c.by_dns, c.retry_after, c.took
+                    );
                 }
             }
         }
@@ -197,7 +218,11 @@ async fn main() -> Result<()> {
         Cmd::InitDb => {}
         Cmd::CheckHandle { .. } => unreachable!("handled before the database connection"),
         Cmd::CheckAccount { dids, resolver } => {
-            let checker = verify::check::Checker::new(&resolver, &cli.user_agent, &verify::check::Limits::default())?;
+            let checker = verify::check::Checker::new(
+                &resolver,
+                &cli.user_agent,
+                &verify::check::Limits::default(),
+            )?;
             let mut client = client;
             verify::check_accounts(&mut client, &checker, &dids).await?;
         }
@@ -247,11 +272,20 @@ async fn main() -> Result<()> {
         } => {
             // An empty setting in the environment is no setting.
             let rates: Vec<String> = rates.into_iter().filter(|r| !r.trim().is_empty()).collect();
-            let controls: Vec<String> = controls.into_iter().filter(|c| !c.trim().is_empty()).collect();
+            let controls: Vec<String> = controls
+                .into_iter()
+                .filter(|c| !c.trim().is_empty())
+                .collect();
             let limits = verify::limiter::Limits::profile(&profile).with_overrides(&rates)?;
-            let controls = controls.iter().map(|c| verify::control::parse(c)).collect::<Result<Vec<_>>>()?;
+            let controls = controls
+                .iter()
+                .map(|c| verify::control::parse(c))
+                .collect::<Result<Vec<_>>>()?;
             if unsafe_no_controls {
-                anyhow::ensure!(controls.is_empty(), "--unsafe-no-controls and --control cannot both be given");
+                anyhow::ensure!(
+                    controls.is_empty(),
+                    "--unsafe-no-controls and --control cannot both be given"
+                );
             } else {
                 verify::control::validate(&controls)?;
             }
@@ -271,7 +305,14 @@ async fn main() -> Result<()> {
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }
-        Cmd::Api { listen, connections, plc_fresh_seconds, max_batch, live_deadline_seconds, consumer_queue_cap } => {
+        Cmd::Api {
+            listen,
+            connections,
+            plc_fresh_seconds,
+            max_batch,
+            live_deadline_seconds,
+            consumer_queue_cap,
+        } => {
             drop(client);
             let opts = api::Opts {
                 database_url: cli.database_url,

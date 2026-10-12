@@ -40,7 +40,11 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { dns: Duration::from_secs(5), connect: Duration::from_secs(8), total: Duration::from_secs(20) }
+        Limits {
+            dns: Duration::from_secs(5),
+            connect: Duration::from_secs(8),
+            total: Duration::from_secs(20),
+        }
     }
 }
 
@@ -86,13 +90,19 @@ pub fn valid_did(s: &str) -> bool {
     if s.len() > 2048 {
         return false;
     }
-    let Some(rest) = s.strip_prefix("did:") else { return false };
-    let Some((method, id)) = rest.split_once(':') else { return false };
+    let Some(rest) = s.strip_prefix("did:") else {
+        return false;
+    };
+    let Some((method, id)) = rest.split_once(':') else {
+        return false;
+    };
     !method.is_empty()
         && method.bytes().all(|b| b.is_ascii_lowercase())
         && !id.is_empty()
         && !id.ends_with(':')
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:%-".contains(&b))
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:%-".contains(&b))
 }
 
 /// The resolver named in config: `system`, or an address.
@@ -102,10 +112,17 @@ pub fn build_resolver(spec: &str, limits: &Limits) -> Result<TokioResolver> {
     } else {
         let addr: SocketAddr = match spec.parse::<SocketAddr>() {
             Ok(a) => a,
-            Err(_) => SocketAddr::new(spec.parse::<IpAddr>().with_context(|| format!("bad resolver address {spec}"))?, 53),
+            Err(_) => SocketAddr::new(
+                spec.parse::<IpAddr>()
+                    .with_context(|| format!("bad resolver address {spec}"))?,
+                53,
+            ),
         };
         let group = NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
-        TokioResolver::builder_with_config(ResolverConfig::from_parts(None, vec![], group), TokioConnectionProvider::default())
+        TokioResolver::builder_with_config(
+            ResolverConfig::from_parts(None, vec![], group),
+            TokioConnectionProvider::default(),
+        )
     };
     let o = builder.options_mut();
     o.timeout = limits.dns;
@@ -133,12 +150,18 @@ async fn addresses(resolver: &TokioResolver, host: &str) -> Result<Vec<IpAddr>, 
     if found.is_empty() {
         found = match resolver.ipv6_lookup(name.as_str()).await {
             Ok(l) => l.iter().map(|a| IpAddr::V6(a.0)).collect(),
-            Err(e) if e.is_nx_domain() || e.is_no_records_found() => return Err(NoAddress::Nothing),
+            Err(e) if e.is_nx_domain() || e.is_no_records_found() => {
+                return Err(NoAddress::Nothing);
+            }
             Err(_) => return Err(NoAddress::Failed),
         };
     }
     found.retain(|ip| is_public(*ip));
-    if found.is_empty() { Err(NoAddress::Nothing) } else { Ok(found) }
+    if found.is_empty() {
+        Err(NoAddress::Nothing)
+    } else {
+        Ok(found)
+    }
 }
 
 /// DNS for the HTTPS client, so every hop of a redirect is guarded too.
@@ -159,7 +182,11 @@ impl Resolve for GuardedDns {
     }
 }
 
-pub fn build_http(resolver: TokioResolver, user_agent: &str, limits: &Limits) -> Result<reqwest::Client> {
+pub fn build_http(
+    resolver: TokioResolver,
+    user_agent: &str,
+    limits: &Limits,
+) -> Result<reqwest::Client> {
     let policy = reqwest::redirect::Policy::custom(|attempt| {
         if attempt.previous().len() >= MAX_REDIRECTS {
             return attempt.error("too many redirects");
@@ -228,7 +255,11 @@ fn read_status(status: u16) -> Option<Outcome> {
 fn read_body(body: &[u8]) -> Outcome {
     let text = String::from_utf8_lossy(body);
     let d = text.trim();
-    if valid_did(d) { Outcome::Did(d.to_owned()) } else { Outcome::Nothing }
+    if valid_did(d) {
+        Outcome::Did(d.to_owned())
+    } else {
+        Outcome::Nothing
+    }
 }
 
 pub struct Checker {
@@ -247,15 +278,32 @@ impl Checker {
     /// check uses one of them alone.
     pub async fn resolve(&self, handle: &str, dns: bool, https: bool) -> Check {
         let started = Instant::now();
-        let done = |outcome, by_dns, retry_after| Check { outcome, retry_after, by_dns, took: started.elapsed() };
+        let done = |outcome, by_dns, retry_after| Check {
+            outcome,
+            retry_after,
+            by_dns,
+            took: started.elapsed(),
+        };
 
         // A name too long for the prefix has no record to ask for.
         if dns && handle.len() <= 244 {
-            match self.resolver.txt_lookup(format!("_atproto.{handle}.")).await {
+            match self
+                .resolver
+                .txt_lookup(format!("_atproto.{handle}."))
+                .await
+            {
                 Ok(found) => {
                     let records: Vec<String> = found
                         .iter()
-                        .map(|t| String::from_utf8_lossy(&t.txt_data().iter().flat_map(|p| p.iter().copied()).collect::<Vec<u8>>()).into_owned())
+                        .map(|t| {
+                            String::from_utf8_lossy(
+                                &t.txt_data()
+                                    .iter()
+                                    .flat_map(|p| p.iter().copied())
+                                    .collect::<Vec<u8>>(),
+                            )
+                            .into_owned()
+                        })
                         .collect();
                     match read_txt(records.iter().map(String::as_str)) {
                         Txt::Did(d) => return done(Outcome::Did(d), true, None),
@@ -276,10 +324,17 @@ impl Checker {
         match addresses(&self.resolver, handle).await {
             Ok(_) => {}
             Err(NoAddress::Nothing) => return done(Outcome::Nothing, false, None),
-            Err(NoAddress::Failed) => return done(Outcome::Inconclusive("address lookup failed"), false, None),
+            Err(NoAddress::Failed) => {
+                return done(Outcome::Inconclusive("address lookup failed"), false, None);
+            }
         }
 
-        let mut resp = match self.http.get(format!("https://{handle}/.well-known/atproto-did")).send().await {
+        let mut resp = match self
+            .http
+            .get(format!("https://{handle}/.well-known/atproto-did"))
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 let why = if e.is_timeout() {
@@ -288,15 +343,23 @@ impl Checker {
                     "refused redirect"
                 } else if e.is_connect() {
                     let s = format!("{e:?}").to_ascii_lowercase();
-                    if s.contains("certificate") || s.contains("tls") || s.contains("handshake") { "tls failed" } else { "connect failed" }
+                    if s.contains("certificate") || s.contains("tls") || s.contains("handshake") {
+                        "tls failed"
+                    } else {
+                        "connect failed"
+                    }
                 } else {
                     "request failed"
                 };
                 return done(Outcome::Inconclusive(why), false, None);
             }
         };
-        let retry_after =
-            resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()).map(Duration::from_secs);
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
         if let Some(outcome) = read_status(resp.status().as_u16()) {
             return done(outcome, false, retry_after);
         }
@@ -321,12 +384,21 @@ impl Checker {
     /// wait the host asked for. The address guard and the redirect rules
     /// apply as for a handle.
     pub async fn fetch_document(&self, host: &str) -> (Option<String>, Option<Duration>) {
-        let mut resp = match self.http.get(format!("https://{host}/.well-known/did.json")).send().await {
+        let mut resp = match self
+            .http
+            .get(format!("https://{host}/.well-known/did.json"))
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(_) => return (None, None),
         };
-        let retry_after =
-            resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()).map(Duration::from_secs);
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
         if !resp.status().is_success() {
             return (None, retry_after);
         }
@@ -358,10 +430,22 @@ mod tests {
 
     #[test]
     fn txt_records() {
-        assert_eq!(read_txt(["did=did:plc:abc"].into_iter()), Txt::Did("did:plc:abc".into()));
-        assert_eq!(read_txt(["v=spf1 -all", "did=did:plc:abc", "did=did:plc:abc"].into_iter()), Txt::Did("did:plc:abc".into()));
-        assert_eq!(read_txt(["did=did:plc:abc", "did=did:web:other.example"].into_iter()), Txt::Conflict);
-        assert_eq!(read_txt(["v=spf1 -all", "did:plc:abc", "did=not a did"].into_iter()), Txt::None);
+        assert_eq!(
+            read_txt(["did=did:plc:abc"].into_iter()),
+            Txt::Did("did:plc:abc".into())
+        );
+        assert_eq!(
+            read_txt(["v=spf1 -all", "did=did:plc:abc", "did=did:plc:abc"].into_iter()),
+            Txt::Did("did:plc:abc".into())
+        );
+        assert_eq!(
+            read_txt(["did=did:plc:abc", "did=did:web:other.example"].into_iter()),
+            Txt::Conflict
+        );
+        assert_eq!(
+            read_txt(["v=spf1 -all", "did:plc:abc", "did=not a did"].into_iter()),
+            Txt::None
+        );
         assert_eq!(read_txt([].into_iter()), Txt::None);
     }
 
@@ -375,15 +459,27 @@ mod tests {
             assert_eq!(read_status(refused), Some(Outcome::Inconclusive("refused")));
         }
         for wait in [408, 425, 429] {
-            assert_eq!(read_status(wait), Some(Outcome::Inconclusive("asked to wait")));
+            assert_eq!(
+                read_status(wait),
+                Some(Outcome::Inconclusive("asked to wait"))
+            );
         }
-        assert_eq!(read_status(503), Some(Outcome::Inconclusive("server error")));
-        assert_eq!(read_status(302), Some(Outcome::Inconclusive("unexpected status")));
+        assert_eq!(
+            read_status(503),
+            Some(Outcome::Inconclusive("server error"))
+        );
+        assert_eq!(
+            read_status(302),
+            Some(Outcome::Inconclusive("unexpected status"))
+        );
     }
 
     #[test]
     fn bodies() {
-        assert_eq!(read_body(b"  did:plc:ewvi7nxzyoun6zhxrhs64oiz\n"), Outcome::Did("did:plc:ewvi7nxzyoun6zhxrhs64oiz".into()));
+        assert_eq!(
+            read_body(b"  did:plc:ewvi7nxzyoun6zhxrhs64oiz\n"),
+            Outcome::Did("did:plc:ewvi7nxzyoun6zhxrhs64oiz".into())
+        );
         assert_eq!(read_body(b"<html>not found</html>"), Outcome::Nothing);
         assert_eq!(read_body(b""), Outcome::Nothing);
     }
@@ -392,14 +488,35 @@ mod tests {
     fn dids() {
         assert!(valid_did("did:plc:ewvi7nxzyoun6zhxrhs64oiz"));
         assert!(valid_did("did:web:example.com%3A8080"));
-        for bad in ["", "did:", "did:plc", "did:PLC:abc", "did:plc:", "did:plc:a b", "plc:abc", "did:web:example.com:"] {
+        for bad in [
+            "",
+            "did:",
+            "did:plc",
+            "did:PLC:abc",
+            "did:plc:",
+            "did:plc:a b",
+            "plc:abc",
+            "did:web:example.com:",
+        ] {
             assert!(!valid_did(bad), "{bad}");
         }
     }
 
     #[test]
     fn private_addresses_are_refused() {
-        for bad in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.5", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fe80::1", "fc00::1", "::ffff:10.0.0.1"] {
+        for bad in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.5.5",
+            "169.254.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "::ffff:10.0.0.1",
+        ] {
             assert!(!is_public(bad.parse().unwrap()), "{bad}");
         }
         for good in ["8.8.8.8", "184.192.21.37", "2606:4700::1111"] {

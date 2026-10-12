@@ -110,7 +110,11 @@ impl Identity {
     /// operations this one nullified.
     pub fn apply(&mut self, op: &Op, window_ms: i64) -> usize {
         // Operations older than the window can no longer be nullified.
-        let stale = self.recent.iter().take_while(|r| op.created_ms - r.created_ms > window_ms).count();
+        let stale = self
+            .recent
+            .iter()
+            .take_while(|r| op.created_ms - r.created_ms > window_ms)
+            .count();
         self.recent.drain(..stale);
 
         let mut nullified = 0;
@@ -223,11 +227,20 @@ mod tests {
     }
 
     fn tombstone(seq: i64, hour: i64, prev: i64) -> Op {
-        Op { kind: Kind::Tombstone, claim: None, pds: None, key: None, ..op(seq, hour, Some(prev), None, None) }
+        Op {
+            kind: Kind::Tombstone,
+            claim: None,
+            pds: None,
+            key: None,
+            ..op(seq, hour, Some(prev), None, None)
+        }
     }
 
     fn rows(id: &Identity) -> Vec<(i32, Option<&str>, Option<&str>)> {
-        id.hist.iter().map(|h| (h.seq, h.claim.as_deref(), h.pds.as_deref())).collect()
+        id.hist
+            .iter()
+            .map(|h| (h.seq, h.claim.as_deref(), h.pds.as_deref()))
+            .collect()
     }
 
     /// What the store would hold after writing `id`: nothing is new any more.
@@ -245,7 +258,10 @@ mod tests {
     #[test]
     fn genesis_writes_no_history() {
         let mut id = Identity::default();
-        assert_eq!(id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW), 0);
+        assert_eq!(
+            id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW),
+            0
+        );
         assert!(id.hist.is_empty());
         assert!(id.claim_changed);
         assert_eq!(id.created_at.as_deref(), Some("t0"));
@@ -272,7 +288,13 @@ mod tests {
         id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW);
         let mut id = stored(id);
         id.apply(&op(2, 200, Some(1), Some("b.example"), Some("p1")), WINDOW);
-        assert_eq!(rows(&id), vec![(0, Some("a.example"), Some("p1")), (1, Some("b.example"), Some("p1"))]);
+        assert_eq!(
+            rows(&id),
+            vec![
+                (0, Some("a.example"), Some("p1")),
+                (1, Some("b.example"), Some("p1"))
+            ]
+        );
         assert_eq!(id.hist[0].changed_at.as_deref(), Some("t0"));
         assert_eq!(id.hist[1].changed_at.as_deref(), Some("t200"));
         assert!(id.claim_changed);
@@ -290,7 +312,10 @@ mod tests {
         let mut id = Identity::default();
         id.apply(&op(1, 0, None, Some("a.example"), None), WINDOW);
         // 85 hours later, prev does not matter: nothing recent can fork.
-        assert_eq!(id.apply(&op(2, 85, Some(99), Some("a.example"), None), WINDOW), 0);
+        assert_eq!(
+            id.apply(&op(2, 85, Some(99), Some("a.example"), None), WINDOW),
+            0
+        );
         assert_eq!(id.recent.len(), 1);
         assert!(id.hist.is_empty());
     }
@@ -299,23 +324,44 @@ mod tests {
     fn recovery_removes_the_rows_of_nullified_operations() {
         let mut id = Identity::default();
         id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW);
-        id.apply(&op(2, 1, Some(1), Some("thief.example"), Some("evil")), WINDOW);
-        id.apply(&op(3, 2, Some(2), Some("thief2.example"), Some("evil")), WINDOW);
+        id.apply(
+            &op(2, 1, Some(1), Some("thief.example"), Some("evil")),
+            WINDOW,
+        );
+        id.apply(
+            &op(3, 2, Some(2), Some("thief2.example"), Some("evil")),
+            WINDOW,
+        );
         let mut id = stored(id);
         assert_eq!(rows(&id).len(), 3);
         // The recovery follows operation 1 and moves the account.
-        assert_eq!(id.apply(&op(4, 3, Some(1), Some("a.example"), Some("p2")), WINDOW), 2);
-        assert_eq!(rows(&id), vec![(0, Some("a.example"), Some("p1")), (1, Some("a.example"), Some("p2"))]);
+        assert_eq!(
+            id.apply(&op(4, 3, Some(1), Some("a.example"), Some("p2")), WINDOW),
+            2
+        );
+        assert_eq!(
+            rows(&id),
+            vec![
+                (0, Some("a.example"), Some("p1")),
+                (1, Some("a.example"), Some("p2"))
+            ]
+        );
         assert_eq!(id.hist_deleted, vec![1, 2]);
         assert_eq!(id.recent_deleted, vec![2, 3]);
-        assert_eq!(id.recent.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 4]);
+        assert_eq!(
+            id.recent.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
     }
 
     #[test]
     fn recovery_to_the_original_state_leaves_no_history() {
         let mut id = Identity::default();
         id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW);
-        id.apply(&op(2, 1, Some(1), Some("thief.example"), Some("evil")), WINDOW);
+        id.apply(
+            &op(2, 1, Some(1), Some("thief.example"), Some("evil")),
+            WINDOW,
+        );
         let mut id = stored(id);
         id.apply(&op(3, 2, Some(1), Some("a.example"), Some("p1")), WINDOW);
         assert!(id.hist.is_empty());
@@ -328,7 +374,10 @@ mod tests {
     fn a_fork_inside_one_page_writes_nothing_it_then_removes() {
         let mut id = Identity::default();
         id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW);
-        id.apply(&op(2, 1, Some(1), Some("thief.example"), Some("evil")), WINDOW);
+        id.apply(
+            &op(2, 1, Some(1), Some("thief.example"), Some("evil")),
+            WINDOW,
+        );
         id.apply(&op(3, 2, Some(1), Some("a.example"), Some("p1")), WINDOW);
         assert!(id.hist.is_empty());
         assert!(id.hist_deleted.is_empty());
@@ -344,8 +393,17 @@ mod tests {
         id.apply(&op(3, 101, Some(2), Some("c.example"), Some("p1")), WINDOW);
         let mut id = stored(id);
         // Follows operation 1, which left the window long ago.
-        assert_eq!(id.apply(&op(4, 102, Some(1), Some("d.example"), Some("p1")), WINDOW), 2);
-        assert_eq!(rows(&id), vec![(0, Some("a.example"), Some("p1")), (1, Some("d.example"), Some("p1"))]);
+        assert_eq!(
+            id.apply(&op(4, 102, Some(1), Some("d.example"), Some("p1")), WINDOW),
+            2
+        );
+        assert_eq!(
+            rows(&id),
+            vec![
+                (0, Some("a.example"), Some("p1")),
+                (1, Some("d.example"), Some("p1"))
+            ]
+        );
     }
 
     #[test]
@@ -355,7 +413,10 @@ mod tests {
         let mut id = stored(id);
         id.apply(&tombstone(2, 1, 1), WINDOW);
         assert_eq!(id.status, Status::Tombstoned);
-        assert_eq!((id.claim.clone(), id.pds.clone(), id.key.clone()), (None, None, None));
+        assert_eq!(
+            (id.claim.clone(), id.pds.clone(), id.key.clone()),
+            (None, None, None)
+        );
         assert!(id.claim_changed);
         assert_eq!(rows(&id), vec![(0, Some("a.example"), Some("p1"))]);
         assert_eq!(id.recent.last().unwrap().hist_seq, None);
@@ -376,7 +437,13 @@ mod tests {
         assert!(same.claim_changed);
         // Recovery to a new PDS: the original row stays and one is added.
         id.apply(&op(3, 2, Some(1), Some("a.example"), Some("p2")), WINDOW);
-        assert_eq!(rows(&id), vec![(0, Some("a.example"), Some("p1")), (1, Some("a.example"), Some("p2"))]);
+        assert_eq!(
+            rows(&id),
+            vec![
+                (0, Some("a.example"), Some("p1")),
+                (1, Some("a.example"), Some("p2"))
+            ]
+        );
     }
 
     #[test]
@@ -387,12 +454,24 @@ mod tests {
             claim: Some("e.example".into()),
             pds: Some("p1".into()),
             created_at: Some("t0".into()),
-            hist: vec![HistRow { seq: 4, claim: Some("e.example".into()), pds: Some("p1".into()), changed_at: None, new: false }],
+            hist: vec![HistRow {
+                seq: 4,
+                claim: Some("e.example".into()),
+                pds: Some("p1".into()),
+                changed_at: None,
+                new: false,
+            }],
             ..Identity::default()
         };
-        id.apply(&op(10, 1000, Some(9), Some("f.example"), Some("p1")), WINDOW);
+        id.apply(
+            &op(10, 1000, Some(9), Some("f.example"), Some("p1")),
+            WINDOW,
+        );
         // Nullified within the same page by a recovery whose prev is old.
-        id.apply(&op(11, 1001, Some(9), Some("e.example"), Some("p1")), WINDOW);
+        id.apply(
+            &op(11, 1001, Some(9), Some("e.example"), Some("p1")),
+            WINDOW,
+        );
         assert_eq!(rows(&id), vec![(4, Some("e.example"), Some("p1"))]);
         assert!(id.hist_deleted.is_empty());
     }
@@ -401,11 +480,20 @@ mod tests {
     fn unknown_operations_stay_in_the_chain() {
         let mut id = Identity::default();
         id.apply(&op(1, 0, None, Some("a.example"), Some("p1")), WINDOW);
-        let other = Op { kind: Kind::Other, claim: None, pds: None, key: None, ..op(2, 1, Some(1), None, None) };
+        let other = Op {
+            kind: Kind::Other,
+            claim: None,
+            pds: None,
+            key: None,
+            ..op(2, 1, Some(1), None, None)
+        };
         assert_eq!(id.apply(&other, WINDOW), 0);
         assert_eq!(id.claim.as_deref(), Some("a.example"));
         // The next operation follows it, so it is no fork.
-        assert_eq!(id.apply(&op(3, 2, Some(2), Some("a.example"), Some("p1")), WINDOW), 0);
+        assert_eq!(
+            id.apply(&op(3, 2, Some(2), Some("a.example"), Some("p1")), WINDOW),
+            0
+        );
         assert!(id.hist.is_empty());
     }
 }

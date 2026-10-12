@@ -18,7 +18,8 @@ pub struct Opts {
 pub fn stop_signal() -> watch::Receiver<bool> {
     let (tx, rx) = watch::channel(false);
     tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = async {

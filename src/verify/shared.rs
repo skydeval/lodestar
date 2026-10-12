@@ -53,14 +53,23 @@ impl ClaimCounter {
 
     /// True once more identities than the threshold have claimed the handle.
     pub fn is_shared(&self, handle: &str) -> bool {
-        self.slots(handle).into_iter().enumerate().map(|(i, slot)| self.rows[i][slot]).min().unwrap_or(0) > self.threshold
+        self.slots(handle)
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| self.rows[i][slot])
+            .min()
+            .unwrap_or(0)
+            > self.threshold
     }
 
     /// Count every active identity's claim. One pass over `accounts`.
     pub async fn fill(&mut self, client: &Client) -> Result<u64> {
         let params: [&str; 0] = [];
         let rows = client
-            .query_raw("SELECT handle_claim FROM accounts WHERE status = 0 AND handle_claim IS NOT NULL", params)
+            .query_raw(
+                "SELECT handle_claim FROM accounts WHERE status = 0 AND handle_claim IS NOT NULL",
+                params,
+            )
             .await
             .context("reading claims")?;
         tokio::pin!(rows);
@@ -93,13 +102,27 @@ pub async fn ensure_row(client: &Client, handle: &str) -> Result<()> {
 /// A claimant of a shared handle came up for a check. It needs none of its
 /// own: it reads the row. A changed claim asks for the row to be refreshed
 /// early, and a claimant the row already names is recorded as verified.
-pub async fn claimant(client: &mut Client, did: &[u8], handle: &str, ask_refresh: bool) -> Result<()> {
+pub async fn claimant(
+    client: &mut Client,
+    did: &[u8],
+    handle: &str,
+    ask_refresh: bool,
+) -> Result<()> {
     ensure_row(client, handle).await?;
     let tx = client.transaction().await?;
     if ask_refresh {
-        tx.execute("UPDATE shared_handles SET refresh_asked = true WHERE handle = $1", &[&handle]).await?;
+        tx.execute(
+            "UPDATE shared_handles SET refresh_asked = true WHERE handle = $1",
+            &[&handle],
+        )
+        .await?;
     }
-    let named = tx.query_opt("SELECT checked_at FROM shared_handles WHERE handle = $1 AND did = $2", &[&handle, &did]).await?;
+    let named = tx
+        .query_opt(
+            "SELECT checked_at FROM shared_handles WHERE handle = $1 AND did = $2",
+            &[&handle, &did],
+        )
+        .await?;
     if named.is_some() {
         // The row's resolution and this claim together are the two-way
         // verification, and the index has to agree with the row.
@@ -116,8 +139,16 @@ pub async fn claimant(client: &mut Client, did: &[u8], handle: &str, ask_refresh
         .await?;
     }
     // The row carries the failure state from here on.
-    tx.execute("DELETE FROM check_failures WHERE did = $1 AND kind = 0", &[&did]).await?;
-    tx.execute("DELETE FROM verify_due WHERE did = $1 AND kind = 0", &[&did]).await?;
+    tx.execute(
+        "DELETE FROM check_failures WHERE did = $1 AND kind = 0",
+        &[&did],
+    )
+    .await?;
+    tx.execute(
+        "DELETE FROM verify_due WHERE did = $1 AND kind = 0",
+        &[&did],
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -125,7 +156,11 @@ pub async fn claimant(client: &mut Client, did: &[u8], handle: &str, ask_refresh
 /// The shared handles due a resolution now: never resolved, a retry or a
 /// confirming check come due, an early refresh asked for and allowed, or
 /// older than the re-check interval.
-pub async fn due(client: &Client, rules: &Rules, early_refresh_floor_secs: f64) -> Result<Vec<String>> {
+pub async fn due(
+    client: &Client,
+    rules: &Rules,
+    early_refresh_floor_secs: f64,
+) -> Result<Vec<String>> {
     let rows = client
         .query(
             "SELECT handle FROM shared_handles WHERE \
@@ -147,7 +182,14 @@ fn ms(column: &str) -> String {
 
 /// Apply one resolution of a shared handle to its row, and to whichever
 /// account holds the handle in the index.
-pub async fn apply(client: &mut Client, rules: &Rules, handle: &str, check: &Check, at: i64, hold_demotions: bool) -> Result<()> {
+pub async fn apply(
+    client: &mut Client,
+    rules: &Rules,
+    handle: &str,
+    check: &Check,
+    at: i64,
+    hold_demotions: bool,
+) -> Result<()> {
     let tx = client.transaction().await?;
     let row = tx
         .query_opt(
@@ -167,7 +209,12 @@ pub async fn apply(client: &mut Client, rules: &Rules, handle: &str, check: &Che
     let named: Option<Vec<u8>> = row.get(0);
     let outcome: i16 = row.get(1);
     let next: Option<i64> = row.get(4);
-    let failure = next.map(|n| Failure { first_failure_at: row.get(2), last_attempt_at: row.get(3), next_attempt_at: n, nothing_at: row.get(5) });
+    let failure = next.map(|n| Failure {
+        first_failure_at: row.get(2),
+        last_attempt_at: row.get(3),
+        next_attempt_at: n,
+        nothing_at: row.get(5),
+    });
     let at_s = at as f64 / 1000.0;
     let secs = |v: Option<i64>| v.map(|ms| ms as f64 / 1000.0);
 
@@ -184,7 +231,13 @@ pub async fn apply(client: &mut Client, rules: &Rules, handle: &str, check: &Che
         tx.execute(
             "UPDATE accounts SET handle_status = $3, handle_checked_at = to_timestamp($4) \
              WHERE handle_claim = $1 AND handle_status = $5 AND did <> $2",
-            &[&handle, &d, &db::HANDLE_MISMATCH, &at_s, &db::HANDLE_VERIFIED],
+            &[
+                &handle,
+                &d,
+                &db::HANDLE_MISMATCH,
+                &at_s,
+                &db::HANDLE_VERIFIED,
+            ],
         )
         .await?;
         tx.execute(
@@ -198,8 +251,21 @@ pub async fn apply(client: &mut Client, rules: &Rules, handle: &str, check: &Che
 
     // A row that names a DID is treated as a verified handle: one "nothing"
     // result does not unname it.
-    let status = if named.is_some() { db::HANDLE_VERIFIED } else { outcome };
-    let decision = decide::decide(rules, status, &check.outcome, false, failure, at, check.retry_after, hold_demotions);
+    let status = if named.is_some() {
+        db::HANDLE_VERIFIED
+    } else {
+        outcome
+    };
+    let decision = decide::decide(
+        rules,
+        status,
+        &check.outcome,
+        false,
+        failure,
+        at,
+        check.retry_after,
+        hold_demotions,
+    );
     if let Some(settled) = decision.status {
         // The row now names nobody, and so does the index.
         tx.execute(

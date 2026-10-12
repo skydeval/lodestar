@@ -54,7 +54,10 @@ pub async fn push(db: &impl GenericClient, reason: i16, items: &[Item<'_>]) -> R
 /// How many rows are queued for one reason, counted no further than `cap`.
 pub async fn depth(db: &impl GenericClient, reason: i16, cap: i64) -> Result<i64> {
     let row = db
-        .query_one("SELECT count(*) FROM (SELECT 1 FROM verify_due WHERE reason = $1 LIMIT $2) x", &[&reason, &cap])
+        .query_one(
+            "SELECT count(*) FROM (SELECT 1 FROM verify_due WHERE reason = $1 LIMIT $2) x",
+            &[&reason, &cap],
+        )
         .await
         .context("measuring the queue")?;
     Ok(row.get(0))

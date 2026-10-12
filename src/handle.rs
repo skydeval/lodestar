@@ -1,7 +1,17 @@
 //! Handle syntax, per the ATProto handle specification.
 
 /// TLDs under which a handle may never resolve.
-const DISALLOWED_TLDS: &[&str] = &["alt", "arpa", "example", "internal", "invalid", "local", "localhost", "onion", "test"];
+const DISALLOWED_TLDS: &[&str] = &[
+    "alt",
+    "arpa",
+    "example",
+    "internal",
+    "invalid",
+    "local",
+    "localhost",
+    "onion",
+    "test",
+];
 
 /// Lowercases `s` and returns it if it is a syntactically valid handle.
 pub fn normalize(s: &str) -> Option<String> {
@@ -44,13 +54,21 @@ mod tests {
 
     #[test]
     fn accepts_and_lowercases() {
-        assert_eq!(normalize("Alice.Bsky.Social").as_deref(), Some("alice.bsky.social"));
-        assert_eq!(normalize("a-b.example.com").as_deref(), Some("a-b.example.com"));
+        assert_eq!(
+            normalize("Alice.Bsky.Social").as_deref(),
+            Some("alice.bsky.social")
+        );
+        assert_eq!(
+            normalize("a-b.example.com").as_deref(),
+            Some("a-b.example.com")
+        );
     }
 
     #[test]
     fn rejects_bad_syntax() {
-        for bad in ["", "nodot", "a..b", "-a.com", "a-.com", "a.1com", "a_b.com", "é.com", "a.com."] {
+        for bad in [
+            "", "nodot", "a..b", "-a.com", "a-.com", "a.1com", "a_b.com", "é.com", "a.com.",
+        ] {
             assert_eq!(normalize(bad), None, "{bad}");
         }
         assert_eq!(normalize(&format!("{}.com", "a".repeat(64))), None);
