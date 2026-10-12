@@ -975,8 +975,10 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-postgres",
+ "tokio-rustls",
  "tokio-tungstenite",
  "url",
+ "webpki-roots 1.0.9",
  "zstd",
 ]
 

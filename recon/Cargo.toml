@@ -19,7 +19,9 @@ psl = "2"
 url = "2"
 zstd = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+webpki-roots = "1"
+tokio-tungstenite ={ version = "0.26", features = ["rustls-tls-webpki-roots"] }
 reqwest ={ version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

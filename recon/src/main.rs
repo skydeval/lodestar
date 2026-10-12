@@ -214,6 +214,14 @@ enum Cmd {
         /// Stop when the 95th percentile of recent DNS lookups passes this.
         #[arg(long, default_value_t = 500)]
         dns_slow_ms: u64,
+        /// When answers slow, drop to this rate and keep watching. 0 stops.
+        #[arg(long, default_value_t = 0)]
+        on_slow_rate: u32,
+        #[arg(long, default_value_t = 300)]
+        on_slow_seconds: u64,
+        /// Append one line of timings every ten seconds to this file.
+        #[arg(long)]
+        series: Option<String>,
     },
     /// Page a relay's host roster into recon_hosts.
     ListHosts {
@@ -240,9 +248,20 @@ enum Cmd {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    if let Cmd::RateProbe { handles, steps, step_seconds, resolver, max_in_flight, slow_ms, dns_slow_ms } = cli.cmd {
+    if let Cmd::RateProbe { handles, steps, step_seconds, resolver, max_in_flight, slow_ms, dns_slow_ms, on_slow_rate, on_slow_seconds, series } = cli.cmd {
         let steps = steps.iter().map(|s| rate::parse_step(s, step_seconds)).collect::<Result<Vec<_>>>()?;
-        let o = rate::Opts { handles, steps, resolver, user_agent: cli.user_agent, max_in_flight, slow_ms, dns_slow_ms };
+        let o = rate::Opts {
+            handles,
+            steps,
+            resolver,
+            user_agent: cli.user_agent,
+            max_in_flight,
+            slow_ms,
+            dns_slow_ms,
+            on_slow_rate,
+            on_slow_seconds,
+            series,
+        };
         return rate::probe(o).await;
     }
     let mut client = db::connect(&cli.database_url).await?;
