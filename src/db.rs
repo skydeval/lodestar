@@ -75,6 +75,82 @@ CREATE TABLE IF NOT EXISTS sync_state (
     phase  text NOT NULL,
     tip_at timestamptz
 );
+
+-- The readable view. The tables hold DIDs, keys and endpoints in compact
+-- form; these present them as text for an operator looking by hand.
+CREATE OR REPLACE FUNCTION lodestar_b32(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    alphabet constant text := 'abcdefghijklmnopqrstuvwxyz234567';
+    acc bigint := 0;
+    bits integer := 0;
+    result text := '';
+BEGIN
+    FOR i IN 0 .. octet_length(b) - 1 LOOP
+        acc := (acc << 8) | get_byte(b, i);
+        bits := bits + 8;
+        WHILE bits >= 5 LOOP
+            bits := bits - 5;
+            result := result || substr(alphabet, ((acc >> bits) & 31)::integer + 1, 1);
+        END LOOP;
+        acc := acc & ((1::bigint << bits) - 1);
+    END LOOP;
+    IF bits > 0 THEN
+        result := result || substr(alphabet, ((acc << (5 - bits)) & 31)::integer + 1, 1);
+    END IF;
+    RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION lodestar_b58(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    alphabet constant text := '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    n numeric := 0;
+    result text := '';
+BEGIN
+    FOR i IN 0 .. octet_length(b) - 1 LOOP
+        n := n * 256 + get_byte(b, i);
+    END LOOP;
+    WHILE n > 0 LOOP
+        result := substr(alphabet, (n % 58)::integer + 1, 1) || result;
+        n := div(n, 58);
+    END LOOP;
+    FOR i IN 0 .. octet_length(b) - 1 LOOP
+        EXIT WHEN get_byte(b, i) <> 0;
+        result := '1' || result;
+    END LOOP;
+    RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION lodestar_did(b bytea) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT CASE get_byte(b, 0)
+        WHEN 0 THEN 'did:plc:' || lodestar_b32(substring(b FROM 2))
+        ELSE convert_from(substring(b FROM 2), 'UTF8')
+    END
+$$;
+
+CREATE OR REPLACE FUNCTION lodestar_key(b bytea) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT CASE get_byte(b, 0)
+        WHEN 0 THEN convert_from(substring(b FROM 2), 'UTF8')
+        ELSE 'did:key:z' || lodestar_b58(b)
+    END
+$$;
+
+CREATE OR REPLACE VIEW accounts_readable AS
+SELECT lodestar_did(a.did) AS did,
+       CASE a.method WHEN 0 THEN 'plc' ELSE 'web' END AS method,
+       p.endpoint AS pds,
+       lodestar_key(a.signing_key) AS signing_key,
+       a.handle_claim,
+       CASE a.handle_status WHEN 0 THEN 'verified' WHEN 1 THEN 'mismatch' WHEN 2 THEN 'unresolved'
+            WHEN 3 THEN 'unreachable' WHEN 4 THEN 'pending' ELSE 'none' END AS handle_status,
+       a.handle_checked_at,
+       CASE a.status WHEN 0 THEN 'active' WHEN 1 THEN 'tombstoned' ELSE 'unresolvable' END AS status,
+       a.listed,
+       a.created_at
+FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id;
+
+CREATE OR REPLACE VIEW identity_history_readable AS
+SELECT lodestar_did(h.did) AS did, h.seq, h.changed_at, h.handle_claim, p.endpoint AS pds
+FROM identity_history h LEFT JOIN pds_endpoints p ON p.id = h.pds_id;
 "#;
 
 pub async fn init(client: &Client) -> Result<()> {

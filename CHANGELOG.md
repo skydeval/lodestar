@@ -24,6 +24,8 @@ Work towards 0.1.0.
     are removed. CIDs are compared by value.
   - When the first sync reaches the tip, the `accounts` key and the
     recovery-window table are rebuilt.
+- Views `accounts_readable` and `identity_history_readable`, which
+  show DIDs, signing keys and endpoints as text.
 - `lodestar init-db` and `lodestar ingest`.
 - Scripts to build, test and run on the build host.
 - Recon tooling under `recon/`, kept as its own Cargo workspace so the
