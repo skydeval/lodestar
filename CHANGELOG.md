@@ -62,6 +62,13 @@ Work towards 0.1.0.
   from that row, and a changed claim asks for the row to be
   refreshed, at most once an hour. The API reads a claimant's
   status from the row.
+- The background sweep. A lap reads `accounts` in storage order and
+  checks every handle that is due, listed identities first. One lap
+  covers every domain but the large ones and sends what it cannot
+  check at once to the queue; each large domain has a walker of its
+  own, paced by that domain's rate. A lap starts once the PLC source
+  is at the tip and the first relay walk is done, and no sooner than
+  7 days after the last one started.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

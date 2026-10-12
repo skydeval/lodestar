@@ -122,6 +122,12 @@ enum Cmd {
         /// A shared handle is refreshed early no more often than this.
         #[arg(long, default_value_t = 60)]
         shared_refresh_minutes: u64,
+        /// Domains with so many handles that each gets its own walker.
+        #[arg(long, value_delimiter = ',', default_value = "bsky.social")]
+        large_domains: Vec<String>,
+        /// How much of the accounts table a lap reads at a time, in blocks.
+        #[arg(long, default_value_t = 500)]
+        lap_chunk_blocks: i64,
     },
     /// The API role: serve lookups.
     Api {
@@ -203,7 +209,7 @@ async fn main() -> Result<()> {
             drop(client);
             ingest::run(opts).await?;
         }
-        Cmd::Verify { resolver, connections, shared_threshold, shared_refresh_minutes } => {
+        Cmd::Verify { resolver, connections, shared_threshold, shared_refresh_minutes, large_domains, lap_chunk_blocks } => {
             drop(client);
             let opts = verify::worker::Opts {
                 database_url: cli.database_url,
@@ -212,6 +218,8 @@ async fn main() -> Result<()> {
                 connections,
                 shared_threshold: shared_threshold.min(254),
                 early_refresh_floor: Duration::from_secs(shared_refresh_minutes * 60),
+                large_domains,
+                lap_chunk_blocks: lap_chunk_blocks.max(1),
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }

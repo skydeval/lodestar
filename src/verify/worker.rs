@@ -13,6 +13,7 @@ use tokio_postgres::Client;
 
 use super::check::{Checker, Outcome};
 use super::decide::Rules;
+use super::lap;
 use super::limiter::{self, Limiter};
 use super::shared::{self, ClaimCounter};
 use super::store::{self, Applied};
@@ -31,6 +32,10 @@ pub struct Opts {
     pub shared_threshold: u8,
     /// A shared handle is refreshed early no more often than this.
     pub early_refresh_floor: Duration,
+    /// Domains with so many handles that each gets a walker of its own.
+    pub large_domains: Vec<String>,
+    /// How much of `accounts` a lap reads at a time, in 8 kB blocks.
+    pub lap_chunk_blocks: i64,
 }
 
 /// How many queued items are read at a time, and how many reads one pass
@@ -45,7 +50,7 @@ const RETRY_LOOK: Duration = Duration::from_secs(30);
 const SHARED_LOOK: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
-struct Counts {
+pub(super) struct Counts {
     verified: AtomicU64,
     mismatch: AtomicU64,
     nothing: AtomicU64,
@@ -53,15 +58,17 @@ struct Counts {
     stale: AtomicU64,
     shared_claimants: AtomicU64,
     shared_resolutions: AtomicU64,
+    pub(super) lap_checks: AtomicU64,
+    pub(super) lap_overflow: AtomicU64,
 }
 
-struct Shared {
+pub(super) struct Shared {
     checker: Checker,
-    limiter: Limiter,
-    rules: Rules,
+    pub(super) limiter: Limiter,
+    pub(super) rules: Rules,
     clients: Vec<Mutex<Client>>,
     next: AtomicUsize,
-    counts: Counts,
+    pub(super) counts: Counts,
 }
 
 impl Shared {
@@ -69,9 +76,14 @@ impl Shared {
         &self.clients[self.next.fetch_add(1, Ordering::Relaxed) % self.clients.len()]
     }
 
-    async fn resolve(&self, claim: &str, domain: &str) -> super::check::Check {
+    /// Resolve under the limiter. A caller that already holds a slot for
+    /// the domain passes it in.
+    async fn resolve(&self, claim: &str, domain: &str, held: Option<limiter::Permit>) -> super::check::Check {
         let found = {
-            let _permit = self.limiter.acquire(domain).await;
+            let _permit = match held {
+                Some(p) => p,
+                None => self.limiter.acquire(domain).await,
+            };
             self.checker.check(claim).await
         };
         if let Some(wait) = found.retry_after {
@@ -83,8 +95,8 @@ impl Shared {
 
 /// Check one account's handle and apply what is found. Leaves the queue
 /// row in place if the claim changed meanwhile, so the new claim is checked.
-async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: String) -> Result<()> {
-    let found = shared.resolve(&claim, &domain).await;
+pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: String, held: Option<limiter::Permit>) -> Result<()> {
+    let found = shared.resolve(&claim, &domain, held).await;
     let at = chrono::Utc::now().timestamp_millis();
     let mut client = shared.db().lock().await;
     let applied = store::apply_handle_result(&mut client, &shared.rules, &did, &claim, &found, at, false).await?;
@@ -116,7 +128,7 @@ async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: Str
 
 /// Resolve a shared handle once and apply it to its row.
 async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Result<()> {
-    let found = shared.resolve(&handle, &domain).await;
+    let found = shared.resolve(&handle, &domain, None).await;
     let at = chrono::Utc::now().timestamp_millis();
     let mut client = shared.db().lock().await;
     shared::apply(&mut client, &shared.rules, &handle, &found, at, false).await?;
@@ -195,10 +207,30 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut control = db::connect(&opts.database_url).await?;
 
     // Which handles are shared has to be known before anything is checked.
-    let mut counter = ClaimCounter::new(opts.shared_threshold);
+    let counter = Arc::new(std::sync::RwLock::new(ClaimCounter::new(opts.shared_threshold)));
     let t = Instant::now();
-    let claims = counter.fill(&control).await?;
+    let claims = {
+        let mut filling = ClaimCounter::new(opts.shared_threshold);
+        let n = filling.fill(&control).await?;
+        *counter.write().expect("counter lock") = filling;
+        n
+    };
     tracing::info!(claims, seconds = t.elapsed().as_secs(), "verification worker started; claims counted");
+
+    // The background sweep: one lap for everything but the large domains,
+    // and a walker for each of those.
+    let mut laps: JoinSet<Result<()>> = JoinSet::new();
+    let large: Vec<String> = opts.large_domains.clone();
+    for domain in std::iter::once(None).chain(large.iter().cloned().map(Some)) {
+        let o = lap::Opts {
+            database_url: opts.database_url.clone(),
+            domain,
+            large: large.clone(),
+            interval: shared.rules.recheck_interval,
+            chunk_blocks: opts.lap_chunk_blocks,
+        };
+        laps.spawn(lap::run(shared.clone(), counter.clone(), o, stop.clone()));
+    }
 
     let mut running = Running { tasks: JoinSet::new(), keys: HashSet::new(), per_domain: HashMap::new() };
     let mut retry_look = tokio::time::interval(RETRY_LOOK);
@@ -248,9 +280,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     continue;
                 };
                 if reason == queue::REASON_CLAIM {
-                    counter.add(&claim);
+                    counter.write().expect("counter lock").add(&claim);
                 }
-                if counter.is_shared(&claim) {
+                if counter.read().expect("counter lock").is_shared(&claim) {
                     // No check of its own: it reads the handle's row.
                     shared::claimant(&mut control, &did, &claim, reason < queue::REASON_EVENT).await?;
                     shared.counts.shared_claimants.fetch_add(1, Ordering::Relaxed);
@@ -263,7 +295,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 started += 1;
                 let shared = shared.clone();
                 running.tasks.spawn(async move {
-                    let result = check_one(shared, did, claim, domain.clone()).await;
+                    let result = check_one(shared, did, claim, domain.clone(), None).await;
                     (key, domain, result)
                 });
             }
@@ -277,6 +309,10 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
 
         tokio::select! {
             _ = stop.changed() => break,
+            Some(ended) = laps.join_next(), if !laps.is_empty() => {
+                // A lap only ends when asked to stop, or on an error.
+                ended??;
+            }
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
             }
@@ -307,6 +343,8 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     stale = c.stale.load(Ordering::Relaxed),
                     shared_claimants = c.shared_claimants.load(Ordering::Relaxed),
                     shared_resolutions = c.shared_resolutions.load(Ordering::Relaxed),
+                    lap_checks = c.lap_checks.load(Ordering::Relaxed),
+                    lap_overflow = c.lap_overflow.load(Ordering::Relaxed),
                     in_flight = running.keys.len(),
                     "verification"
                 );

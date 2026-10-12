@@ -15,6 +15,7 @@ pub const REASON_EVENT: i16 = 31;
 pub const REASON_WALK: i16 = 32;
 pub const REASON_RETRY: i16 = 40;
 pub const REASON_CONFIRM: i16 = 41;
+pub const REASON_LAP_OVERFLOW: i16 = 42;
 
 pub struct Item<'a> {
     pub did: &'a [u8],

@@ -3,6 +3,7 @@
 
 pub mod check;
 pub mod decide;
+pub mod lap;
 pub mod limiter;
 pub mod shared;
 pub mod store;

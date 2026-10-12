@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
 -- `createdAt` of the last operation applied. Context for consumers; how
 -- far behind lodestar is comes from tip_at.
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS last_op_at timestamptz;
+-- When a lap or a large domain's walker last started. A handle is due
+-- when its last check is older than that.
+ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS lap_started_at timestamptz;
 -- Where a listing walk has got to. A listing's cursor is opaque text.
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS position text;
 
