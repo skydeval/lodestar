@@ -89,6 +89,15 @@ Work towards 0.1.0.
   hours regardless and cannot start again until the domain has
   behaved. Their state is stored, and their holds do not run during
   a control pause.
+- `did:web` documents. The verification role fetches each queued
+  document from its own host, reads the handle claim, PDS and
+  signing key (including the older key form), and stores the
+  account. A document that cannot be fetched leaves an
+  `unresolvable` account that is retried with backoff; one that
+  stops resolving keeps its last state for 14 days. Each known
+  document is fetched again daily. A changed claim is queued for a
+  handle check. A `did:web` with a path, a port or a TLD that cannot
+  resolve is rejected without a request.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

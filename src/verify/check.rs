@@ -45,6 +45,7 @@ impl Default for Limits {
 }
 
 const BODY_CAP: usize = 4096;
+const DOCUMENT_CAP: usize = 64 * 1024;
 const MAX_REDIRECTS: usize = 3;
 
 /// True for an address a request may be sent to. Handles are untrusted
@@ -314,6 +315,35 @@ impl Checker {
             }
         }
         done(read_body(&body), false, None)
+    }
+
+    /// Fetch a did:web document from its host. The body, or None with any
+    /// wait the host asked for. The address guard and the redirect rules
+    /// apply as for a handle.
+    pub async fn fetch_document(&self, host: &str) -> (Option<String>, Option<Duration>) {
+        let mut resp = match self.http.get(format!("https://{host}/.well-known/did.json")).send().await {
+            Ok(r) => r,
+            Err(_) => return (None, None),
+        };
+        let retry_after =
+            resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()).map(Duration::from_secs);
+        if !resp.status().is_success() {
+            return (None, retry_after);
+        }
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    body.extend_from_slice(&chunk);
+                    if body.len() > DOCUMENT_CAP {
+                        return (None, None);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => return (None, None),
+            }
+        }
+        (String::from_utf8(body).ok(), None)
     }
 
     /// The whole procedure: DNS, then HTTPS if DNS has no record.

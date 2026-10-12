@@ -20,6 +20,7 @@ use super::limiter::{self, Limiter};
 use super::pause;
 use super::shared::{self, ClaimCounter};
 use super::store::{self, Applied};
+use super::web;
 use crate::queue::{self, KIND_HANDLE};
 use crate::{db, handle};
 
@@ -68,6 +69,7 @@ pub(super) struct Counts {
     shared_resolutions: AtomicU64,
     pub(super) lap_checks: AtomicU64,
     pub(super) lap_overflow: AtomicU64,
+    documents: AtomicU64,
 }
 
 pub(super) struct Shared {
@@ -208,6 +210,62 @@ pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, 
     Ok(())
 }
 
+/// Fetch one did:web document and store what it says.
+async fn fetch_document(shared: Arc<Shared>, did: Vec<u8>, listed: bool) -> Result<()> {
+    let text = crate::encoding::did_text(&did).unwrap_or_default();
+    let Some(host) = web::host(&text) else {
+        // Not a did:web lodestar asks for: rejected without a request.
+        let client = shared.db().lock().await;
+        client.execute("DELETE FROM verify_due WHERE did = $1 AND kind = $2", &[&did, &queue::KIND_DOCUMENT]).await?;
+        return Ok(());
+    };
+    let domain = limiter::registrable(host).to_owned();
+    shared.gate.wait_open().await;
+    let epoch = shared.gate.epoch();
+    let (body, retry_after) = {
+        let _permit = shared.limiter.acquire(&domain).await;
+        shared.checker.fetch_document(host).await
+    };
+    if let Some(wait) = retry_after {
+        shared.limiter.hold(&domain, wait.min(shared.rules.retry_after_ceiling));
+    }
+    if shared.gate.epoch() != epoch {
+        // A control pause started meanwhile: the entry stays for later.
+        return Ok(());
+    }
+    let document = body.and_then(|b| web::read(&text, &b));
+    let mut client = shared.db().lock().await;
+    web::apply(&mut client, &web::Rules::default(), &did, document.as_ref(), listed).await?;
+    shared.counts.documents.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Queue the document fetches that have come due: retries of failing
+/// documents, and the regular refresh of each known one.
+async fn queue_documents(client: &Client, refresh_secs: f64) -> Result<()> {
+    client
+        .execute(
+            "INSERT INTO verify_due (kind, reason, due_at, did) \
+             SELECT 1::int2, $1::int2, next_attempt_at, did FROM check_failures WHERE kind = 1 AND next_attempt_at <= now() \
+             ON CONFLICT (did, kind) DO NOTHING",
+            &[&queue::REASON_RETRY],
+        )
+        .await
+        .context("queueing document retries")?;
+    client
+        .execute(
+            "INSERT INTO verify_due (kind, reason, did) \
+             SELECT 1::int2, $1::int2, w.did FROM web_documents w \
+             WHERE w.last_fetch_at <= now() - make_interval(secs => $2::float8) \
+               AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = w.did AND f.kind = 1) \
+             ON CONFLICT (did, kind) DO NOTHING",
+            &[&queue::REASON_REFRESH, &refresh_secs],
+        )
+        .await
+        .context("queueing document refreshes")?;
+    Ok(())
+}
+
 /// Resolve a shared handle once and apply it to its row.
 async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Result<()> {
     let Some(found) = shared.resolve(&handle, &domain, None).await else {
@@ -241,6 +299,7 @@ async fn queue_retries(client: &Client) -> Result<u64> {
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Key {
     Account(Vec<u8>),
+    Document(Vec<u8>),
     Handle(String),
 }
 
@@ -439,6 +498,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             }
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
+                queue_documents(&control, web::Rules::default().refresh_secs).await?;
                 // Let the domain pauses' holds run out.
                 let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
                 save_changes(&control, &changes).await?;
@@ -447,6 +507,30 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 ended??;
             }
             _ = shared_look.tick(), if shared.gate.is_open() => {
+                // did:web documents waiting to be fetched.
+                let rows = control
+                    .query(
+                        "SELECT did, listed FROM verify_due WHERE kind = $1 AND due_at <= now() ORDER BY reason, due_at LIMIT 200",
+                        &[&queue::KIND_DOCUMENT],
+                    )
+                    .await?;
+                for r in rows {
+                    let did: Vec<u8> = r.get(0);
+                    let listed: bool = r.get(1);
+                    let key = Key::Document(did.clone());
+                    if running.keys.contains(&key) {
+                        continue;
+                    }
+                    let domain = crate::encoding::did_text(&did).as_deref().and_then(web::host).map(|h| limiter::registrable(h).to_owned()).unwrap_or_default();
+                    if !running.admit(&key, &domain, cap_of(&domain)) {
+                        continue;
+                    }
+                    let shared = shared.clone();
+                    running.tasks.spawn(async move {
+                        let result = fetch_document(shared, did, listed).await;
+                        (key, domain, result)
+                    });
+                }
                 for handle in shared::due(&control, &shared.rules, opts.early_refresh_floor.as_secs_f64()).await? {
                     let key = Key::Handle(handle.clone());
                     if running.keys.contains(&key) {
@@ -475,6 +559,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     shared_resolutions = c.shared_resolutions.load(Ordering::Relaxed),
                     lap_checks = c.lap_checks.load(Ordering::Relaxed),
                     lap_overflow = c.lap_overflow.load(Ordering::Relaxed),
+                    documents = c.documents.load(Ordering::Relaxed),
                     in_flight = running.keys.len(),
                     "verification"
                 );

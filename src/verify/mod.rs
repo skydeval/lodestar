@@ -10,6 +10,7 @@ pub mod limiter;
 pub mod pause;
 pub mod shared;
 pub mod store;
+pub mod web;
 pub mod worker;
 
 use anyhow::Result;

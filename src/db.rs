@@ -4,9 +4,11 @@ use anyhow::{Context, Result};
 use tokio_postgres::{Client, NoTls};
 
 pub const METHOD_PLC: i16 = 0;
+pub const METHOD_WEB: i16 = 1;
 
 pub const STATUS_ACTIVE: i16 = 0;
 pub const STATUS_TOMBSTONED: i16 = 1;
+pub const STATUS_UNRESOLVABLE: i16 = 2;
 
 pub const HANDLE_VERIFIED: i16 = 0;
 pub const HANDLE_MISMATCH: i16 = 1;
@@ -142,6 +144,15 @@ CREATE TABLE IF NOT EXISTS control_state (
     left_out      boolean NOT NULL DEFAULT false,
     last          boolean,
     PRIMARY KEY (handle, https)
+);
+
+-- When each known did:web document was last fetched, and when it first
+-- and last resolved.
+CREATE TABLE IF NOT EXISTS web_documents (
+    last_fetch_at    timestamptz NOT NULL,
+    first_success_at timestamptz,
+    last_success_at  timestamptz,
+    did              bytea PRIMARY KEY
 );
 
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
