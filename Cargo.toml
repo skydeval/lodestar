@@ -16,6 +16,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 hickory-resolver = "0.25"
+psl = "2"
 url = "2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
@@ -25,3 +26,6 @@ tokio = { version = "1", features = ["full"] }
 tokio-postgres = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
