@@ -5,7 +5,9 @@
 # verification role is the only one that asks arbitrary hosts.
 
 x-lodestar: &lodestar
-  image: lodestar:${LODESTAR_VERSION:-0.1.0}
+  # The released image. `docker compose build` builds the same thing
+  # from this directory instead.
+  image: ghcr.io/skydeval/lodestar:0.1.0
   build: .
   restart: unless-stopped
   depends_on:

@@ -1,0 +1,60 @@
+# cargo-deny configuration: `cargo deny check` (run by the `deny` job in
+# .github/workflows/ci.yml).
+
+[graph]
+# Lodestar is built for and run on Linux; dependencies that only other
+# platforms pull in are left out.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+[advisories]
+version = 2
+# A yanked version in Cargo.lock fails the check, like a vulnerability.
+yanked = "deny"
+ignore = [
+    # hickory-proto 0.25: a loop in NSEC3 proof validation. Lodestar
+    # builds the resolver without DNSSEC validation, so that code is
+    # not compiled in.
+    { id = "RUSTSEC-2026-0118", reason = "DNSSEC validation is not enabled" },
+    # hickory-proto 0.25: slow name compression when encoding a message
+    # with many records. Lodestar encodes only its own one-question
+    # queries; it never encodes a message someone else supplied.
+    # Fixed in 0.26.1; remove this with the move to hickory-resolver
+    # 0.26.
+    { id = "RUSTSEC-2026-0119", reason = "only one-question queries are encoded" },
+]
+
+[licenses]
+version = 2
+# The licences the dependency tree needs, all permissive and compatible
+# with distributing lodestar under MIT OR Apache-2.0. A crate offered
+# under several licences passes when one of them is listed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# The crate is `publish = false`.
+ignore = true
+
+[bans]
+# Two versions of one crate are reported, not refused: the duplicates in
+# this tree come from dependencies of dependencies.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

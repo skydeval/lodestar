@@ -43,10 +43,17 @@ They coordinate only through the database.
 
 ## Running it
 
+You need `compose.yaml` and `.env.example` from this repository,
+nothing else:
+
 ```sh
 cp .env.example .env    # then fill it in
 docker compose up -d
 ```
+
+That pulls the released image, `ghcr.io/skydeval/lodestar`, at the
+version `compose.yaml` names. To build the image from a checkout
+instead, run `docker compose build` first.
 
 `.env` needs three things:
 
@@ -101,3 +108,15 @@ cargo test
 
 `recon/` is separate measurement tooling with its own workspace. It
 is not part of lodestar.
+
+## Releasing
+
+Set the version in `Cargo.toml` and `compose.yaml`, give the version
+its section in `CHANGELOG.md`, and push a tag `v<version>`. The
+`image` workflow builds the image, pushes it, and creates the
+release from that section of the changelog.
+
+## Licence
+
+MIT or Apache-2.0, at your option. See `LICENSE-MIT` and
+`LICENSE-APACHE`.

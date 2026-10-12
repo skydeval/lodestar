@@ -121,6 +121,13 @@ Work towards 0.1.0.
 - Config profiles for rates, `vps` and `hobbyist`, and per-domain
   rate overrides.
 - A README for operators.
+- A release workflow. A tag `v<version>` builds the x86-64 image,
+  pushes it to `ghcr.io/skydeval/lodestar` under that version, and
+  creates the release from the version's section of this file. The
+  compose file names that image.
+- A CI workflow: formatting, clippy, tests and a dependency check on
+  every push.
+- Licensed under MIT or Apache-2.0.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch
