@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
     phase  text NOT NULL,
     tip_at timestamptz
 );
+-- `createdAt` of the last operation applied. Context for consumers; how
+-- far behind lodestar is comes from tip_at.
+ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS last_op_at timestamptz;
 
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.

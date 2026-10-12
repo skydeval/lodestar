@@ -280,9 +280,9 @@ pub async fn apply_page(client: &mut Client, pds: &mut PdsCache, origin: &str, o
         .context("inserting recent operations")?;
     }
     tx.execute(
-        "INSERT INTO sync_state (source, origin, cursor, phase) VALUES ($1, $2, $3, 'backfill') \
-         ON CONFLICT (source) DO UPDATE SET cursor = EXCLUDED.cursor",
-        &[&SOURCE, &origin, &last.seq],
+        "INSERT INTO sync_state (source, origin, cursor, phase, last_op_at) VALUES ($1, $2, $3, 'backfill', $4::text::timestamptz) \
+         ON CONFLICT (source) DO UPDATE SET cursor = EXCLUDED.cursor, last_op_at = EXCLUDED.last_op_at",
+        &[&SOURCE, &origin, &last.seq, &last.created_at],
     )
     .await
     .context("committing the cursor")?;

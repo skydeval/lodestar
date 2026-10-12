@@ -10,6 +10,8 @@ description = "Identity index for the ATProto network."
 
 [dependencies]
 anyhow = "1"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"

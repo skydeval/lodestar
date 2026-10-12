@@ -26,6 +26,13 @@ Work towards 0.1.0.
     recovery-window table are rebuilt.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
+- The API role, `lodestar api`: account lookup, history, batch
+  lookup, handle lookup from the verified index, and `/ops/health`.
+  Every account answer carries the PLC source's position, and an
+  identity lodestar does not have is `not_found` only when the
+  source is at the tip and fresh, `syncing` otherwise. Live
+  resolution of unseen handles and `did:web` identities, and the
+  refresh endpoint, wait on the verification role.
 - `lodestar init-db` and `lodestar ingest`.
 - Scripts to build, test and run on the build host.
 - Recon tooling under `recon/`, kept as its own Cargo workspace so the

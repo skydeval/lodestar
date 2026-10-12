@@ -1,5 +1,6 @@
 //! Lodestar: an identity index for the ATProto network.
 
+mod api;
 mod db;
 mod encoding;
 mod handle;
@@ -53,6 +54,21 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         plc_max_pages: u64,
     },
+    /// The API role: serve lookups.
+    Api {
+        #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
+        listen: String,
+        /// Database connections to hold.
+        #[arg(long, default_value_t = 4)]
+        connections: usize,
+        /// The PLC source counts as fresh while its last tip confirmation
+        /// is no older than this.
+        #[arg(long, default_value_t = 300)]
+        plc_fresh_seconds: i64,
+        /// Most DIDs in one batch lookup.
+        #[arg(long, default_value_t = 1000)]
+        max_batch: usize,
+    },
 }
 
 #[tokio::main]
@@ -89,6 +105,11 @@ async fn main() -> Result<()> {
                 max_pages: plc_max_pages,
             };
             plc::sync::run(&mut client, opts).await?;
+        }
+        Cmd::Api { listen, connections, plc_fresh_seconds, max_batch } => {
+            db::init(&client).await?;
+            let opts = api::Opts { database_url: cli.database_url, listen, connections, fresh_seconds: plc_fresh_seconds, max_batch };
+            api::run(opts).await?;
         }
     }
     Ok(())
