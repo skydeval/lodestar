@@ -18,6 +18,7 @@ use super::domains::{Admit, Answer, Change, Kind, Pauses, State};
 use super::lap;
 use super::limiter::{self, Limiter};
 use super::pause;
+use super::requests;
 use super::shared::{self, ClaimCounter};
 use super::store::{self, Applied};
 use super::web;
@@ -55,6 +56,8 @@ const PAGES: usize = 10;
 const IDLE: Duration = Duration::from_millis(250);
 /// How often failing checks are looked at for retries that have come due.
 const RETRY_LOOK: Duration = Duration::from_secs(30);
+/// How often the API role's live requests are looked for.
+const REQUEST_LOOK: Duration = Duration::from_millis(100);
 /// How often shared handles are looked at.
 const SHARED_LOOK: Duration = Duration::from_secs(5);
 
@@ -86,7 +89,7 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-    fn db(&self) -> &Mutex<Client> {
+    pub(super) fn db(&self) -> &Mutex<Client> {
         &self.clients[self.next.fetch_add(1, Ordering::Relaxed) % self.clients.len()]
     }
 
@@ -95,7 +98,7 @@ impl Shared {
     ///
     /// None if a control pause started while the check was in flight: its
     /// result is suspect and is dropped.
-    async fn resolve(&self, claim: &str, domain: &str, held: Option<limiter::Permit>) -> Option<super::check::Check> {
+    pub(super) async fn resolve(&self, claim: &str, domain: &str, held: Option<limiter::Permit>) -> Option<super::check::Check> {
         self.gate.wait_open().await;
         let epoch = self.gate.epoch();
         let found = {
@@ -298,6 +301,8 @@ async fn queue_retries(client: &Client) -> Result<u64> {
 /// handle's.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Key {
+    /// A live request from the API role.
+    Request(i64),
     Account(Vec<u8>),
     Document(Vec<u8>),
     Handle(String),
@@ -404,6 +409,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut running = Running { tasks: JoinSet::new(), keys: HashSet::new(), per_domain: HashMap::new() };
     let mut retry_look = tokio::time::interval(RETRY_LOOK);
     let mut shared_look = tokio::time::interval(SHARED_LOOK);
+    let mut request_look = tokio::time::interval(REQUEST_LOOK);
     let mut report = tokio::time::interval(Duration::from_secs(60));
     report.tick().await;
 
@@ -455,7 +461,10 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 }
                 if counter.read().expect("counter lock").is_shared(&claim) {
                     // No check of its own: it reads the handle's row.
-                    shared::claimant(&mut control, &did, &claim, reason < queue::REASON_EVENT).await?;
+                    // A changed claim or a consumer's refresh asks for the
+                    // row to be refreshed early. A plain lookup does not.
+                    let ask = reason == queue::REASON_CLAIM || reason == queue::REASON_REFRESH_ASKED;
+                    shared::claimant(&mut control, &did, &claim, ask).await?;
                     shared.counts.shared_claimants.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -502,6 +511,18 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 // Let the domain pauses' holds run out.
                 let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
                 save_changes(&control, &changes).await?;
+            }
+            _ = request_look.tick() => {
+                // A consumer is waiting on these: they go ahead of the queue.
+                for request in requests::take(&control).await? {
+                    let key = Key::Request(request.id);
+                    running.keys.insert(key.clone());
+                    let shared = shared.clone();
+                    running.tasks.spawn(async move {
+                        let result = requests::serve(shared, request).await;
+                        (key, String::new(), result)
+                    });
+                }
             }
             Some(ended) = controls.join_next(), if !controls.is_empty() => {
                 ended??;

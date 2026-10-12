@@ -155,6 +155,20 @@ CREATE TABLE IF NOT EXISTS web_documents (
     did              bytea PRIMARY KEY
 );
 
+-- A live resolution the API role is waiting on: a handle to resolve
+-- forward (kind 0) or a did:web document to fetch (kind 1). The
+-- verification role does the work and writes the outcome.
+-- state: 0 waiting, 1 taken, 2 answered.
+CREATE TABLE IF NOT EXISTS resolve_requests (
+    id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    deadline timestamptz NOT NULL,
+    kind     smallint NOT NULL,
+    state    smallint NOT NULL DEFAULT 0,
+    subject  text NOT NULL,
+    outcome  text,
+    did      bytea
+);
+
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.
 CREATE OR REPLACE FUNCTION lodestar_b32(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$

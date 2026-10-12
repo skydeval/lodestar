@@ -11,6 +11,11 @@ pub const KIND_DOCUMENT: i16 = 1;
 /// Why, which is also its priority: the tens digit is the level, and a
 /// lower number is served first.
 pub const REASON_CLAIM: i16 = 10;
+/// A consumer looked the account up, or asked for it to be refreshed.
+pub const REASON_LOOKUP: i16 = 20;
+pub const REASON_REFRESH_ASKED: i16 = 21;
+/// It was in a batch lookup.
+pub const REASON_BATCH: i16 = 30;
 pub const REASON_EVENT: i16 = 31;
 pub const REASON_WALK: i16 = 32;
 pub const REASON_RETRY: i16 = 40;

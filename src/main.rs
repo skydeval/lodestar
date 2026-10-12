@@ -154,6 +154,12 @@ enum Cmd {
         /// Most DIDs in one batch lookup.
         #[arg(long, default_value_t = 1000)]
         max_batch: usize,
+        /// How long a request waits on a live resolution, in seconds.
+        #[arg(long, default_value_t = 5)]
+        live_deadline_seconds: u64,
+        /// Most checks consumers may have waiting, per kind of request.
+        #[arg(long, default_value_t = 10_000)]
+        consumer_queue_cap: i64,
     },
 }
 
@@ -252,9 +258,17 @@ async fn main() -> Result<()> {
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }
-        Cmd::Api { listen, connections, plc_fresh_seconds, max_batch } => {
+        Cmd::Api { listen, connections, plc_fresh_seconds, max_batch, live_deadline_seconds, consumer_queue_cap } => {
             drop(client);
-            let opts = api::Opts { database_url: cli.database_url, listen, connections, fresh_seconds: plc_fresh_seconds, max_batch };
+            let opts = api::Opts {
+                database_url: cli.database_url,
+                listen,
+                connections,
+                fresh_seconds: plc_fresh_seconds,
+                max_batch,
+                live_deadline: Duration::from_secs(live_deadline_seconds.max(1)),
+                queue_cap: consumer_queue_cap,
+            };
             api::run(opts).await?;
         }
     }

@@ -98,6 +98,18 @@ Work towards 0.1.0.
   document is fetched again daily. A changed claim is queued for a
   handle check. A `did:web` with a path, a port or a TLD that cannot
   resolve is rejected without a request.
+- Live resolution through the API. A handle that is not in the index
+  is resolved by the verification role while the request waits, up
+  to 5 seconds; if it resolves to an account that claims it, the
+  verification is recorded and returned. A `did:web` lodestar has
+  not seen is fetched the same way and stored if it declares a PDS,
+  and reported as `not_an_account` if it does not. Misses are
+  remembered for a minute.
+- `POST /account/{did}/refresh`: fetches a `did:web`'s document
+  again and queues the account's handle for a check ahead of the
+  sweep.
+- A never-checked handle a consumer looks up, alone or in a batch,
+  is queued ahead of the sweep, up to a bound.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

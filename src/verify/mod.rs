@@ -8,6 +8,7 @@ pub mod domains;
 pub mod lap;
 pub mod limiter;
 pub mod pause;
+pub mod requests;
 pub mod shared;
 pub mod store;
 pub mod web;
