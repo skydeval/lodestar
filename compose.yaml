@@ -16,6 +16,9 @@ x-lodestar: &lodestar
     LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
   # Give a role time to commit its cursor and finish checks in flight.
   stop_grace_period: 40s
+  # An image updater on the same host should leave these alone.
+  labels:
+    com.centurylinklabs.watchtower.enable: "false"
 
 services:
   postgres:
@@ -39,6 +42,9 @@ services:
       - -c
       - checkpoint_timeout=15min
     shm_size: 1gb
+    # Never restarted by an image updater: that would interrupt a sync.
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

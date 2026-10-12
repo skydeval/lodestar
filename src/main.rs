@@ -245,6 +245,9 @@ async fn main() -> Result<()> {
             profile,
             rates,
         } => {
+            // An empty setting in the environment is no setting.
+            let rates: Vec<String> = rates.into_iter().filter(|r| !r.trim().is_empty()).collect();
+            let controls: Vec<String> = controls.into_iter().filter(|c| !c.trim().is_empty()).collect();
             let limits = verify::limiter::Limits::profile(&profile).with_overrides(&rates)?;
             let controls = controls.iter().map(|c| verify::control::parse(c)).collect::<Result<Vec<_>>>()?;
             if unsafe_no_controls {

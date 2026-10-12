@@ -197,6 +197,10 @@ impl Lap<'_> {
     }
 }
 
+fn self_ready(lap: &Lap<'_>) -> bool {
+    lap.shared.claims_ready.load(Ordering::Acquire)
+}
+
 pub(super) async fn run(shared: Arc<Shared>, counter: Arc<RwLock<ClaimCounter>>, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let client = db::connect(&opts.database_url).await?;
     let source = format!("lap:{}", opts.domain.as_deref().unwrap_or("general"));
@@ -223,7 +227,9 @@ pub(super) async fn run(shared: Arc<Shared>, counter: Arc<RwLock<ClaimCounter>>,
         let time_for_a_new_lap: bool = row.get(3);
         // Handle checks wait for the PLC source to reach the tip, and the
         // sweep's order depends on the marks the first walk sets.
-        let ready: bool = row.get::<_, bool>(4) && row.get::<_, bool>(5);
+        // And no handle is checked before the claims have been counted,
+        // which is what finds the shared handles.
+        let ready: bool = row.get::<_, bool>(4) && row.get::<_, bool>(5) && self_ready(&lap);
 
         let resume = match (phase.as_str(), started) {
             ("listed", Some(s)) => Some((Pass::Listed, block, s)),

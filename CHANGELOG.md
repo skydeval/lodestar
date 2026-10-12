@@ -168,6 +168,14 @@ Work towards 0.1.0.
 
 ### Fixed
 
+- The verification role counted handle claims once, when it started.
+  Started beside a first sync, it counted an empty table and would
+  later have checked every claimant of a shared handle separately. It
+  now counts when the PLC source reaches the tip, and checks no handle
+  before then.
+- An empty rate or control setting in the environment stopped the
+  verification role at start-up. It is now treated as unset.
+
 - Recon PLC backfill compared an operation's `prev` with the previous
   operation's CID as text. The directory accepts a `prev` written in
   base58btc as the same CID it publishes in base32, so 111 ordinary

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -88,6 +88,9 @@ pub(super) struct Shared {
     pub(super) counts: Counts,
     /// The per-domain pauses.
     pub(super) pauses: std::sync::Mutex<Pauses>,
+    /// Set once claims have been counted with the PLC source at the tip.
+    /// Until then no handle is checked.
+    pub(super) claims_ready: AtomicBool,
 }
 
 impl Shared {
@@ -284,6 +287,25 @@ async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Re
     Ok(())
 }
 
+/// Count every identity's claim, once, when the PLC source is at the tip.
+/// Does nothing before then, or once it has been done.
+async fn count_claims_at_the_tip(client: &Client, shared: &Shared, counter: &std::sync::RwLock<ClaimCounter>, threshold: u8) -> Result<()> {
+    if shared.claims_ready.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let live = client.query_opt("SELECT 1 FROM sync_state WHERE source = 'plc' AND phase = 'live'", &[]).await?.is_some();
+    if !live {
+        return Ok(());
+    }
+    let t = Instant::now();
+    let mut filling = ClaimCounter::new(threshold);
+    let claims = filling.fill(client).await?;
+    *counter.write().expect("counter lock") = filling;
+    shared.claims_ready.store(true, Ordering::Release);
+    tracing::info!(claims, seconds = t.elapsed().as_secs(), "claims counted; handle checks may run");
+    Ok(())
+}
+
 /// Queue the retries and confirming checks that have come due.
 async fn queue_retries(client: &Client) -> Result<u64> {
     client
@@ -375,17 +397,14 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             pauses.restore(domain, if kind == "pause2" { 2 } else { 3 }, state, r.get::<_, Option<i64>>(2).unwrap_or(now_ms), now_ms);
         }
     }
-    let shared = Arc::new(Shared { pauses: std::sync::Mutex::new(pauses), checker, gate, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default() });
-    // Which handles are shared has to be known before anything is checked.
+    let shared = Arc::new(Shared { pauses: std::sync::Mutex::new(pauses), checker, gate, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default(), claims_ready: AtomicBool::new(false) });
+    // Which handles are shared has to be known before any handle is
+    // checked. The count is taken once the PLC source is at the tip: a
+    // count taken during the first sync would miss most of the directory,
+    // and the claims that sync applies are not queued.
     let counter = Arc::new(std::sync::RwLock::new(ClaimCounter::new(opts.shared_threshold)));
-    let t = Instant::now();
-    let claims = {
-        let mut filling = ClaimCounter::new(opts.shared_threshold);
-        let n = filling.fill(&control).await?;
-        *counter.write().expect("counter lock") = filling;
-        n
-    };
-    tracing::info!(claims, seconds = t.elapsed().as_secs(), "verification worker started; claims counted");
+    tracing::info!("verification worker started");
+    count_claims_at_the_tip(&control, &shared, &counter, opts.shared_threshold).await?;
 
     let mut controls: JoinSet<Result<()>> = JoinSet::new();
     if !opts.controls.is_empty() {
@@ -426,8 +445,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         // does not hide the rest.
         let mut started = 0usize;
         let mut after: Option<(i16, f64, Vec<u8>)> = None;
-        // While verification is paused nothing is started.
-        let pages = if shared.gate.is_open() { PAGES } else { 0 };
+        // While verification is paused nothing is started, and no handle
+        // is checked before the claims have been counted.
+        let pages = if shared.gate.is_open() && shared.claims_ready.load(Ordering::Acquire) { PAGES } else { 0 };
         for _ in 0..pages {
             let (reason, due, did) = after.clone().unwrap_or((0, 0.0, Vec::new()));
             let rows = control
@@ -509,6 +529,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             }
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
+                count_claims_at_the_tip(&control, &shared, &counter, opts.shared_threshold).await?;
                 queue_documents(&control, web::Rules::default().refresh_secs).await?;
                 // Let the domain pauses' holds run out.
                 let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
