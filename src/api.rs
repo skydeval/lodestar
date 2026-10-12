@@ -549,7 +549,131 @@ async fn get_health(State(app): State<Arc<App>>) -> Result<Json<Value>, Miss> {
             json!({ "table_bytes": r.get::<_, i64>(1), "index_bytes": r.get::<_, i64>(2), "rows_estimate": r.get::<_, i64>(3) }),
         );
     }
-    Ok(Json(json!({ "version": env!("CARGO_PKG_VERSION"), "sources": src, "storage": storage })))
+    let verification = verification(&app).await?;
+    Ok(Json(json!({ "version": env!("CARGO_PKG_VERSION"), "sources": src, "verification": verification, "storage": storage })))
+}
+
+/// What is known about verification: the worker's own report, the queue,
+/// the laps, the pauses and the control checks.
+async fn verification(app: &App) -> Result<Value> {
+    let db = app.db();
+    let worker = match db
+        .query_opt(&format!("SELECT status, to_char(updated_at AT TIME ZONE 'UTC', {TS}) FROM role_status WHERE role = 'verify'"), &[])
+        .await?
+    {
+        Some(r) => {
+            let mut v: Value = serde_json::from_str(&r.get::<_, String>(0)).unwrap_or(Value::Null);
+            if v.is_object() {
+                v["reported_at"] = json!(r.get::<_, String>(1));
+            }
+            v
+        }
+        None => Value::Null,
+    };
+    let mut queue = serde_json::Map::new();
+    for r in db.query("SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2 ORDER BY 1, 2", &[]).await? {
+        let what = if r.get::<_, i16>(0) == queue::KIND_HANDLE { "handle" } else { "document" };
+        queue.insert(format!("{what}:{}", r.get::<_, i16>(1)), json!(r.get::<_, i64>(2)));
+    }
+    let mut laps = serde_json::Map::new();
+    let mut pauses = Vec::new();
+    for r in db
+        .query(
+            &format!(
+                "SELECT source, phase, cursor, to_char(lap_started_at AT TIME ZONE 'UTC', {TS}), to_char(tip_at AT TIME ZONE 'UTC', {TS}) \
+                 FROM sync_state WHERE source LIKE 'lap:%' OR source LIKE 'pause%' OR source = 'control-pause' ORDER BY source"
+            ),
+            &[],
+        )
+        .await?
+    {
+        let source: String = r.get(0);
+        let phase: String = r.get(1);
+        match source.strip_prefix("lap:") {
+            Some(name) => {
+                laps.insert(name.to_owned(), json!({ "pass": phase, "block": r.get::<_, i64>(2), "started_at": r.get::<_, Option<String>>(3) }));
+            }
+            None => pauses.push(json!({ "pause": source, "state": phase, "since": r.get::<_, Option<String>>(4) })),
+        }
+    }
+    let controls: Vec<Value> = db
+        .query(&format!("SELECT handle, https, last, left_out, to_char(failing_since AT TIME ZONE 'UTC', {TS}) FROM control_state ORDER BY https, handle"), &[])
+        .await?
+        .iter()
+        .map(|r| {
+            json!({
+                "handle": r.get::<_, String>(0),
+                "method": if r.get::<_, bool>(1) { "https" } else { "dns" },
+                "passed_last_round": r.get::<_, Option<bool>>(2),
+                "left_out": r.get::<_, bool>(3),
+                "failing_since": r.get::<_, Option<String>>(4),
+            })
+        })
+        .collect();
+    let counts = db
+        .query_one("SELECT (SELECT count(*) FROM shared_handles), (SELECT count(*) FROM check_failures), (SELECT count(*) FROM check_failures WHERE nothing_at IS NOT NULL)", &[])
+        .await?;
+    Ok(json!({
+        "worker": worker,
+        "queue": queue,
+        "laps": laps,
+        "pauses": pauses,
+        "controls": controls,
+        "shared_handles": counts.get::<_, i64>(0),
+        "checks_failing": counts.get::<_, i64>(1),
+        "awaiting_confirmation": counts.get::<_, i64>(2),
+    }))
+}
+
+/// The same figures in Prometheus text format.
+async fn get_metrics(State(app): State<Arc<App>>) -> Result<String, Miss> {
+    use std::fmt::Write as _;
+    let db = app.db();
+    let mut out = String::new();
+    for r in db
+        .query(
+            "SELECT source, cursor, COALESCE(extract(epoch FROM now() - tip_at), -1)::float8, (phase = 'live')::int \
+             FROM sync_state WHERE source IN ('plc', 'jetstream')",
+            &[],
+        )
+        .await?
+    {
+        let source: String = r.get(0);
+        let _ = writeln!(out, "lodestar_source_cursor{{source=\"{source}\"}} {}", r.get::<_, i64>(1));
+        let _ = writeln!(out, "lodestar_source_live{{source=\"{source}\"}} {}", r.get::<_, i32>(3));
+        let _ = writeln!(out, "lodestar_source_tip_age_seconds{{source=\"{source}\"}} {:.0}", r.get::<_, f64>(2));
+    }
+    for r in db
+        .query(
+            "SELECT c.relname, pg_table_size(c.oid), pg_indexes_size(c.oid), c.reltuples::bigint \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'",
+            &[],
+        )
+        .await?
+    {
+        let table: String = r.get(0);
+        let _ = writeln!(out, "lodestar_table_bytes{{table=\"{table}\"}} {}", r.get::<_, i64>(1));
+        let _ = writeln!(out, "lodestar_index_bytes{{table=\"{table}\"}} {}", r.get::<_, i64>(2));
+        let _ = writeln!(out, "lodestar_table_rows_estimate{{table=\"{table}\"}} {}", r.get::<_, i64>(3));
+    }
+    for r in db.query("SELECT kind, reason, count(*) FROM verify_due GROUP BY 1, 2", &[]).await? {
+        let _ = writeln!(out, "lodestar_verify_due{{kind=\"{}\",reason=\"{}\"}} {}", r.get::<_, i16>(0), r.get::<_, i16>(1), r.get::<_, i64>(2));
+    }
+    let counts = db.query_one("SELECT (SELECT count(*) FROM shared_handles), (SELECT count(*) FROM check_failures)", &[]).await?;
+    let _ = writeln!(out, "lodestar_shared_handles {}", counts.get::<_, i64>(0));
+    let _ = writeln!(out, "lodestar_checks_failing {}", counts.get::<_, i64>(1));
+    if let Some(r) = db.query_opt("SELECT status FROM role_status WHERE role = 'verify'", &[]).await? {
+        let v: Value = serde_json::from_str(&r.get::<_, String>(0)).unwrap_or(Value::Null);
+        let _ = writeln!(out, "lodestar_verification_paused {}", i32::from(v["paused_by_controls"].as_bool().unwrap_or(false)));
+        if let Some(checks) = v["checks"].as_object() {
+            for (result, n) in checks {
+                let _ = writeln!(out, "lodestar_checks_total{{result=\"{result}\"}} {}", n.as_u64().unwrap_or(0));
+            }
+        }
+        let _ = writeln!(out, "lodestar_checks_in_flight {}", v["in_flight"].as_u64().unwrap_or(0));
+        let _ = writeln!(out, "lodestar_domains_paused {}", v["domains_paused_failing"].as_array().map_or(0, Vec::len) + v["domains_paused_resolving_to_nothing"].as_array().map_or(0, Vec::len));
+    }
+    Ok(out)
 }
 
 pub async fn run(opts: Opts) -> Result<()> {
@@ -573,6 +697,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         .route("/accounts", post(post_accounts))
         .route("/handle/{handle}", get(get_handle))
         .route("/ops/health", get(get_health))
+        .route("/ops/metrics", get(get_metrics))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(&opts.listen).await.with_context(|| format!("listening on {}", opts.listen))?;
     tracing::info!(listen = %opts.listen, "API role started");

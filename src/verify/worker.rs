@@ -570,6 +570,33 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             }
             _ = report.tick() => {
                 let c = &shared.counts;
+                let (failing_domains, nothing_domains) = shared.pauses.lock().expect("pauses lock").paused();
+                let status = serde_json::json!({
+                    "paused_by_controls": !shared.gate.is_open(),
+                    "checks": {
+                        "verified": c.verified.load(Ordering::Relaxed),
+                        "mismatch": c.mismatch.load(Ordering::Relaxed),
+                        "nothing": c.nothing.load(Ordering::Relaxed),
+                        "failing": c.failing.load(Ordering::Relaxed),
+                        "stale": c.stale.load(Ordering::Relaxed),
+                    },
+                    "shared_claimants": c.shared_claimants.load(Ordering::Relaxed),
+                    "shared_resolutions": c.shared_resolutions.load(Ordering::Relaxed),
+                    "lap_checks": c.lap_checks.load(Ordering::Relaxed),
+                    "lap_overflow": c.lap_overflow.load(Ordering::Relaxed),
+                    "documents": c.documents.load(Ordering::Relaxed),
+                    "in_flight": running.keys.len(),
+                    "domains_paused_failing": failing_domains,
+                    "domains_paused_resolving_to_nothing": nothing_domains,
+                    "domains_at_their_in_flight_cap": shared.limiter.full_domains(),
+                });
+                control
+                    .execute(
+                        "INSERT INTO role_status (role, status) VALUES ('verify', $1) \
+                         ON CONFLICT (role) DO UPDATE SET status = EXCLUDED.status, updated_at = now()",
+                        &[&status.to_string()],
+                    )
+                    .await?;
                 tracing::info!(
                     verified = c.verified.load(Ordering::Relaxed),
                     mismatch = c.mismatch.load(Ordering::Relaxed),

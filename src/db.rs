@@ -169,6 +169,14 @@ CREATE TABLE IF NOT EXISTS resolve_requests (
     did      bytea
 );
 
+-- What each role last reported about itself, as JSON, for health and
+-- metrics. The roles do not talk to each other; the API role reads this.
+CREATE TABLE IF NOT EXISTS role_status (
+    role       text PRIMARY KEY,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    status     text NOT NULL
+);
+
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.
 CREATE OR REPLACE FUNCTION lodestar_b32(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$

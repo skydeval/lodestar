@@ -110,6 +110,12 @@ Work towards 0.1.0.
   sweep.
 - A never-checked handle a consumer looks up, alone or in a batch,
   is queued ahead of the sweep, up to a bound.
+- `/ops/health` reports verification: the worker's own counts, the
+  queue by reason, lap positions, pauses, control checks, shared
+  handles and failing checks. `/ops/metrics` gives the sources,
+  table sizes, queue and verification figures in Prometheus format.
+  The verification role writes its status to the database each
+  minute for the API role to read.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch
