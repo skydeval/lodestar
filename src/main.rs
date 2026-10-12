@@ -4,12 +4,16 @@ mod api;
 mod db;
 mod encoding;
 mod handle;
+mod ingest;
+mod jetstream;
 mod plc;
+mod queue;
+mod walk;
 
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "lodestar", version)]
@@ -24,36 +28,69 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(Args)]
+struct IngestArgs {
+    #[arg(long, env = "LODESTAR_PLC_URL", default_value = "https://plc.directory")]
+    plc_url: String,
+    /// Operations a page, at most 1,000.
+    #[arg(long, default_value_t = 1000)]
+    plc_page_size: u32,
+    /// Least time between export requests during the first sync.
+    #[arg(long, default_value_t = 250)]
+    plc_min_interval_ms: u64,
+    /// How often the export is asked for more when there is no stream.
+    #[arg(long, default_value_t = 5)]
+    plc_poll_seconds: u64,
+    /// How often the export is asked to confirm the tip while streaming.
+    #[arg(long, default_value_t = 120)]
+    plc_tip_check_seconds: u64,
+    /// Poll the export at the tip instead of taking the stream.
+    #[arg(long)]
+    plc_no_stream: bool,
+    /// The recovery window with its margin, in hours.
+    #[arg(long, default_value_t = 84)]
+    plc_window_hours: i64,
+    /// Stop after this many pages. 0 runs until stopped.
+    #[arg(long, default_value_t = 0)]
+    plc_max_pages: u64,
+
+    /// The Jetstream instance.
+    #[arg(long, env = "LODESTAR_JETSTREAM_URL", default_value = "wss://jetstream.us-east.bsky.network")]
+    jetstream_url: String,
+    /// Reconnect when the subscription has been silent this long.
+    #[arg(long, default_value_t = 300)]
+    jetstream_quiet_seconds: u64,
+    /// Most events that may wait to be acted on. More are dropped.
+    #[arg(long, default_value_t = 10_000)]
+    jetstream_event_cap: i64,
+    /// Run without the Jetstream source.
+    #[arg(long)]
+    no_jetstream: bool,
+
+    /// The relay whose listing is walked.
+    #[arg(long, env = "LODESTAR_RELAY_URL", default_value = "https://relay1.us-east.bsky.network")]
+    relay_url: String,
+    /// Least time between listing requests.
+    #[arg(long, default_value_t = 250)]
+    walk_min_interval_ms: u64,
+    /// A finished walk is run again after this many days.
+    #[arg(long, default_value_t = 7)]
+    walk_every_days: u64,
+    /// Stop a walk after this many pages. 0 walks to the end.
+    #[arg(long, default_value_t = 0)]
+    walk_max_pages: u64,
+    /// Run without the relay walk.
+    #[arg(long)]
+    no_walk: bool,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Create the tables. Safe to run again.
     InitDb,
-    /// The ingest role: follow the PLC directory.
-    Ingest {
-        #[arg(long, env = "LODESTAR_PLC_URL", default_value = "https://plc.directory")]
-        plc_url: String,
-        /// Operations a page, at most 1,000.
-        #[arg(long, default_value_t = 1000)]
-        plc_page_size: u32,
-        /// Least time between export requests during the first sync.
-        #[arg(long, default_value_t = 250)]
-        plc_min_interval_ms: u64,
-        /// How often the export is asked for more when there is no stream.
-        #[arg(long, default_value_t = 5)]
-        plc_poll_seconds: u64,
-        /// How often the export is asked to confirm the tip while streaming.
-        #[arg(long, default_value_t = 120)]
-        plc_tip_check_seconds: u64,
-        /// Poll the export at the tip instead of taking the stream.
-        #[arg(long)]
-        plc_no_stream: bool,
-        /// The recovery window with its margin, in hours.
-        #[arg(long, default_value_t = 84)]
-        plc_window_hours: i64,
-        /// Stop after this many pages. 0 runs until stopped.
-        #[arg(long, default_value_t = 0)]
-        plc_max_pages: u64,
-    },
+    /// The ingest role: follow the PLC directory and Jetstream, and walk
+    /// the relay's listing.
+    Ingest(Box<IngestArgs>),
     /// The API role: serve lookups.
     Api {
         #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
@@ -79,35 +116,43 @@ async fn main() -> Result<()> {
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    let mut client = db::connect(&cli.database_url).await?;
+    let client = db::connect(&cli.database_url).await?;
+    db::init(&client).await?;
     match cli.cmd {
-        Cmd::InitDb => db::init(&client).await?,
-        Cmd::Ingest {
-            plc_url,
-            plc_page_size,
-            plc_min_interval_ms,
-            plc_poll_seconds,
-            plc_tip_check_seconds,
-            plc_no_stream,
-            plc_window_hours,
-            plc_max_pages,
-        } => {
-            db::init(&client).await?;
-            let opts = plc::sync::Opts {
-                plc_url: plc_url.trim_end_matches('/').to_owned(),
-                user_agent: cli.user_agent,
-                count: plc_page_size.clamp(1, 1000),
-                min_interval: Duration::from_millis(plc_min_interval_ms),
-                poll_interval: Duration::from_secs(plc_poll_seconds),
-                tip_check: Duration::from_secs(plc_tip_check_seconds.max(1)),
-                stream: !plc_no_stream,
-                window_hours: plc_window_hours,
-                max_pages: plc_max_pages,
+        Cmd::InitDb => {}
+        Cmd::Ingest(a) => {
+            let opts = ingest::Opts {
+                database_url: cli.database_url,
+                plc: plc::sync::Opts {
+                    plc_url: a.plc_url.trim_end_matches('/').to_owned(),
+                    user_agent: cli.user_agent.clone(),
+                    count: a.plc_page_size.clamp(1, 1000),
+                    min_interval: Duration::from_millis(a.plc_min_interval_ms),
+                    poll_interval: Duration::from_secs(a.plc_poll_seconds),
+                    tip_check: Duration::from_secs(a.plc_tip_check_seconds.max(1)),
+                    stream: !a.plc_no_stream,
+                    window_hours: a.plc_window_hours,
+                    max_pages: a.plc_max_pages,
+                },
+                jetstream: (!a.no_jetstream).then(|| jetstream::Opts {
+                    url: a.jetstream_url.trim_end_matches('/').to_owned(),
+                    user_agent: cli.user_agent.clone(),
+                    quiet: Duration::from_secs(a.jetstream_quiet_seconds.max(60)),
+                    event_cap: a.jetstream_event_cap,
+                }),
+                walk: (!a.no_walk).then(|| walk::Opts {
+                    url: a.relay_url.trim_end_matches('/').to_owned(),
+                    user_agent: cli.user_agent.clone(),
+                    min_interval: Duration::from_millis(a.walk_min_interval_ms),
+                    every: Duration::from_secs(a.walk_every_days.max(1) * 86_400),
+                    max_pages: a.walk_max_pages,
+                }),
             };
-            plc::sync::run(&mut client, opts).await?;
+            drop(client);
+            ingest::run(opts).await?;
         }
         Cmd::Api { listen, connections, plc_fresh_seconds, max_batch } => {
-            db::init(&client).await?;
+            drop(client);
             let opts = api::Opts { database_url: cli.database_url, listen, connections, fresh_seconds: plc_fresh_seconds, max_batch };
             api::run(opts).await?;
         }

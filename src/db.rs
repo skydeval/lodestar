@@ -78,6 +78,20 @@ CREATE TABLE IF NOT EXISTS sync_state (
 -- `createdAt` of the last operation applied. Context for consumers; how
 -- far behind lodestar is comes from tip_at.
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS last_op_at timestamptz;
+-- Where a listing walk has got to. A listing's cursor is opaque text.
+ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS position text;
+
+-- Work for the verification role that should not wait for a lap: a handle
+-- to check or a did:web document to fetch. One row per DID and kind of
+-- work. `reason` orders the work; lower is sooner.
+CREATE TABLE IF NOT EXISTS verify_due (
+    due_at timestamptz NOT NULL DEFAULT now(),
+    kind   smallint NOT NULL,
+    reason smallint NOT NULL,
+    listed boolean NOT NULL DEFAULT false,
+    did    bytea NOT NULL,
+    PRIMARY KEY (did, kind)
+);
 
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.

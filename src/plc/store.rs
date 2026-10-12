@@ -8,6 +8,7 @@ use tokio_postgres::{Client, Transaction};
 
 use super::apply::{HistRow, Identity, RecentOp, Status};
 use super::op::Op;
+use crate::queue::{self, Item};
 use crate::{db, encoding, handle};
 
 pub const SOURCE: &str = "plc";
@@ -129,7 +130,17 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
 }
 
 /// Apply one page of operations and commit it with its cursor.
-pub async fn apply_page(client: &mut Client, pds: &mut PdsCache, origin: &str, ops: &[Op], window_ms: i64) -> Result<PageStats> {
+///
+/// `queue_claims` is false during the first sync: there would be one claim
+/// change per identity, and the first lap covers them.
+pub async fn apply_page(
+    client: &mut Client,
+    pds: &mut PdsCache,
+    origin: &str,
+    ops: &[Op],
+    window_ms: i64,
+    queue_claims: bool,
+) -> Result<PageStats> {
     let Some(last) = ops.last() else {
         return Ok(PageStats::default());
     };
@@ -164,6 +175,7 @@ pub async fn apply_page(client: &mut Client, pds: &mut PdsCache, origin: &str, o
     let (mut r_did, mut r_seq, mut r_cid, mut r_at, mut r_hist) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut rd_did, mut rd_seq) = (Vec::new(), Vec::new());
 
+    let mut claims: Vec<Item> = Vec::new();
     for (did, id) in ids.iter().filter(|(_, i)| i.dirty) {
         let status = match id.status {
             Status::Active => db::STATUS_ACTIVE,
@@ -175,6 +187,9 @@ pub async fn apply_page(client: &mut Client, pds: &mut PdsCache, origin: &str, o
             Some(c) if !handle::never_resolves(c) => db::HANDLE_PENDING,
             _ => db::HANDLE_NONE,
         };
+        if queue_claims && id.claim_changed && handle_status == db::HANDLE_PENDING {
+            claims.push(Item { did: did.as_slice(), kind: queue::KIND_HANDLE, listed: false });
+        }
         let pds_id = pds.id(id.pds.as_deref())?;
         if id.exists {
             u_did.push(did);
@@ -279,6 +294,8 @@ pub async fn apply_page(client: &mut Client, pds: &mut PdsCache, origin: &str, o
         .await
         .context("inserting recent operations")?;
     }
+    // A changed claim is checked ahead of everything else.
+    queue::push(&tx, queue::REASON_CLAIM, &claims).await?;
     tx.execute(
         "INSERT INTO sync_state (source, origin, cursor, phase, last_op_at) VALUES ($1, $2, $3, 'backfill', $4::text::timestamptz) \
          ON CONFLICT (source) DO UPDATE SET cursor = EXCLUDED.cursor, last_op_at = EXCLUDED.last_op_at",

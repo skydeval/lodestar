@@ -24,6 +24,20 @@ Work towards 0.1.0.
     are removed. CIDs are compared by value.
   - When the first sync reaches the tip, the `accounts` key and the
     recovery-window table are rebuilt.
+- The ingest role's Jetstream source. It subscribes to identity and
+  account events, schedules work from them without writing identity
+  state, marks an identity as listed on an active account event,
+  reads the server's lost-cursor notices, resumes from the lookback
+  floor when its cursor is refused, and reconnects after a quiet
+  period.
+- The ingest role's relay walk. Once the PLC source is at the tip it
+  pages the relay's listing, marks listed identities and queues
+  unseen `did:web` accounts for a document fetch, and runs again
+  every 7 days or when a lost Jetstream cursor asks for it.
+- `verify_due`, the queue of work for the verification role. A
+  changed handle claim is queued once the PLC source is at the tip.
+- The three ingest sources run together, each on its own database
+  connection, and stop together.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

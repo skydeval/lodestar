@@ -144,7 +144,7 @@ impl Source<'_> {
         let Some(last) = ops.last() else {
             return Ok(());
         };
-        let stats = match store::apply_page(self.client, &mut self.pds, &self.opts.plc_url, ops, self.window_ms).await {
+        let stats = match store::apply_page(self.client, &mut self.pds, &self.opts.plc_url, ops, self.window_ms, self.live).await {
             Ok(s) => s,
             Err(e) => {
                 self.pds.clear();
@@ -350,7 +350,8 @@ impl Source<'_> {
     }
 }
 
-pub async fn run(client: &mut Client, opts: Opts) -> Result<()> {
+pub async fn run(mut owned: Client, opts: Opts, stop: watch::Receiver<bool>) -> Result<()> {
+    let client = &mut owned;
     let row = client.query_opt("SELECT origin, cursor, phase FROM sync_state WHERE source = $1", &[&SOURCE]).await?;
     let (cursor, live) = match row {
         Some(r) => {
@@ -364,19 +365,6 @@ pub async fn run(client: &mut Client, opts: Opts) -> Result<()> {
         None => (0, false),
     };
     tracing::info!(cursor, live, "starting the PLC source");
-
-    let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending().await } } => {}
-        }
-        tracing::info!("stopping");
-        let _ = stop_tx.send(true);
-        // Keep the sender alive so `changed` does not fire on its drop.
-        std::future::pending::<()>().await;
-    });
 
     let mut source = Source {
         client,
