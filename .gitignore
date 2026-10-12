@@ -1,0 +1,5 @@
+docs/internal/
+.claude/
+.chainlink/
+.git/
+target/

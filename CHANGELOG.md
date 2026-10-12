@@ -11,6 +11,18 @@ Work towards 0.1.0.
 
 ### Added
 
+- The ingest role's PLC source. It pages the directory's sequenced
+  export from the committed cursor, applies each page in one
+  transaction with its cursor, and polls for more once at the tip.
+  - Identities, PDS endpoints, signing keys and CIDs are stored in
+    compact binary form, with endpoints interned.
+  - History is kept only for identities whose handle claim or PDS has
+    changed, and rows written by operations that a recovery nullifies
+    are removed. CIDs are compared by value.
+  - When the first sync reaches the tip, the `accounts` key and the
+    recovery-window table are rebuilt.
+- `lodestar init-db` and `lodestar ingest`.
+- Scripts to build, test and run on the build host.
 - Recon tooling under `recon/`, kept as its own Cargo workspace so the
   main build does not depend on it. It measures what the design left
   to be measured and is not the implementation.
