@@ -100,6 +100,12 @@ enum Cmd {
         #[arg(long, default_value = "system")]
         resolver: String,
     },
+    /// Check the handles of the named accounts now and store the result.
+    CheckAccount {
+        dids: Vec<String>,
+        #[arg(long, default_value = "system")]
+        resolver: String,
+    },
     /// The API role: serve lookups.
     Api {
         #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
@@ -144,6 +150,11 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::InitDb => {}
         Cmd::CheckHandle { .. } => unreachable!("handled before the database connection"),
+        Cmd::CheckAccount { dids, resolver } => {
+            let checker = verify::check::Checker::new(&resolver, &cli.user_agent, &verify::check::Limits::default())?;
+            let mut client = client;
+            verify::check_accounts(&mut client, &checker, &dids).await?;
+        }
         Cmd::Ingest(a) => {
             let opts = ingest::Opts {
                 database_url: cli.database_url,

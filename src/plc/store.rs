@@ -257,6 +257,11 @@ pub async fn apply_page(
         .await
         .context("updating accounts")?;
     }
+    // A new claim never inherits an old claim's failures.
+    let reset: Vec<&Vec<u8>> = u_did.iter().zip(&u_reset).filter(|(_, r)| **r).map(|(d, _)| *d).collect();
+    if !reset.is_empty() {
+        tx.execute("DELETE FROM check_failures WHERE kind = 0 AND did = ANY($1)", &[&reset]).await.context("clearing failure state")?;
+    }
     // Deletes first: a row removed by a fork can share its seq with one written after it.
     if !hd_did.is_empty() {
         tx.execute(

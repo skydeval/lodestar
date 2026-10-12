@@ -43,6 +43,14 @@ Work towards 0.1.0.
   hop, redirects limited, and each answer classed as a DID, nothing,
   or inconclusive. A 401 or 403 is inconclusive. `lodestar
   check-handle` resolves handles once and prints the result.
+- Applying a check's result. A handle that resolves to the account
+  is verified and takes the handle from whoever held it; a verified
+  handle that resolves to nothing is demoted only by a second such
+  result at least an hour later; a check that keeps failing is
+  retried on a lengthening schedule and settles as unreachable after
+  a day, or after 14 days if the handle was verified. A changed
+  claim clears the old claim's failure state. `lodestar
+  check-account` checks named accounts and stores the result.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

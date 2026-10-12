@@ -8,6 +8,10 @@ pub const METHOD_PLC: i16 = 0;
 pub const STATUS_ACTIVE: i16 = 0;
 pub const STATUS_TOMBSTONED: i16 = 1;
 
+pub const HANDLE_VERIFIED: i16 = 0;
+pub const HANDLE_MISMATCH: i16 = 1;
+pub const HANDLE_UNRESOLVED: i16 = 2;
+pub const HANDLE_UNREACHABLE: i16 = 3;
 pub const HANDLE_PENDING: i16 = 4;
 pub const HANDLE_NONE: i16 = 5;
 
@@ -92,6 +96,20 @@ CREATE TABLE IF NOT EXISTS verify_due (
     did    bytea NOT NULL,
     PRIMARY KEY (did, kind)
 );
+
+-- A check that is failing or awaiting confirmation and has not settled.
+-- Healthy handles have no row. kind: 0 the handle, 1 the did:web document.
+CREATE TABLE IF NOT EXISTS check_failures (
+    first_failure_at timestamptz,
+    last_attempt_at  timestamptz,
+    next_attempt_at  timestamptz NOT NULL,
+    nothing_at       timestamptz,
+    kind             smallint NOT NULL,
+    did              bytea NOT NULL,
+    PRIMARY KEY (did, kind)
+);
+-- The verification role reads this on a timer for what has come due.
+CREATE INDEX IF NOT EXISTS check_failures_next_attempt ON check_failures (next_attempt_at);
 
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.
