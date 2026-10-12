@@ -13,7 +13,10 @@ Work towards 0.1.0.
 
 - The ingest role's PLC source. It pages the directory's sequenced
   export from the committed cursor, applies each page in one
-  transaction with its cursor, and polls for more once at the tip.
+  transaction with its cursor, and once at the tip takes the
+  directory's stream, falling back to polling the export when the
+  stream cannot be opened. While streaming it asks the export every
+  two minutes to confirm it is still at the tip.
   - Identities, PDS endpoints, signing keys and CIDs are stored in
     compact binary form, with endpoints interned.
   - History is kept only for identities whose handle claim or PDS has

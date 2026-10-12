@@ -12,7 +12,10 @@ description = "Identity index for the ATProto network."
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+futures-util = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+reqwest ={ version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-postgres = "0.7"
