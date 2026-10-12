@@ -8,6 +8,7 @@ mod ingest;
 mod jetstream;
 mod plc;
 mod queue;
+mod verify;
 mod walk;
 
 use std::time::Duration;
@@ -91,6 +92,14 @@ enum Cmd {
     /// The ingest role: follow the PLC directory and Jetstream, and walk
     /// the relay's listing.
     Ingest(Box<IngestArgs>),
+    /// Resolve handles once and print what each resolves to. Uses no
+    /// database.
+    CheckHandle {
+        handles: Vec<String>,
+        /// `system`, or a resolver's address.
+        #[arg(long, default_value = "system")]
+        resolver: String,
+    },
     /// The API role: serve lookups.
     Api {
         #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
@@ -116,10 +125,25 @@ async fn main() -> Result<()> {
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
+    if let Cmd::CheckHandle { handles, resolver } = &cli.cmd {
+        let checker = verify::check::Checker::new(resolver, &cli.user_agent, &verify::check::Limits::default())?;
+        for h in handles {
+            match handle::normalize(h) {
+                None => println!("{h}: not a valid handle"),
+                Some(h) if handle::never_resolves(&h) => println!("{h}: never resolved"),
+                Some(h) => {
+                    let c = checker.check(&h).await;
+                    println!("{h}: {:?} by_dns={} retry_after={:?} took={:?}", c.outcome, c.by_dns, c.retry_after, c.took);
+                }
+            }
+        }
+        return Ok(());
+    }
     let client = db::connect(&cli.database_url).await?;
     db::init(&client).await?;
     match cli.cmd {
         Cmd::InitDb => {}
+        Cmd::CheckHandle { .. } => unreachable!("handled before the database connection"),
         Cmd::Ingest(a) => {
             let opts = ingest::Opts {
                 database_url: cli.database_url,

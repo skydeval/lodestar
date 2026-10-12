@@ -38,6 +38,11 @@ Work towards 0.1.0.
   changed handle claim is queued once the PLC source is at the tip.
 - The three ingest sources run together, each on its own database
   connection, and stop together.
+- The handle checker: the DNS record first, then HTTPS on the
+  handle's own host, with non-public addresses refused on every
+  hop, redirects limited, and each answer classed as a DID, nothing,
+  or inconclusive. A 401 or 403 is inconclusive. `lodestar
+  check-handle` resolves handles once and prints the result.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch
