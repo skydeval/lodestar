@@ -229,6 +229,13 @@ impl Limiter {
         }
     }
 
+    /// True while the domain has asked lodestar to wait.
+    pub fn is_held(&self, domain: &str) -> bool {
+        let now = Instant::now();
+        let s = self.0.state.lock().expect("limiter lock");
+        s.domains.get(domain).and_then(|d| d.hold_until).is_some_and(|until| until > now)
+    }
+
     /// Domains whose in-flight cap is full, for health.
     pub fn full_domains(&self) -> Vec<String> {
         let s = self.0.state.lock().expect("limiter lock");

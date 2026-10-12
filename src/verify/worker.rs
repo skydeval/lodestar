@@ -12,9 +12,11 @@ use tokio::task::JoinSet;
 use tokio_postgres::Client;
 
 use super::check::{Checker, Outcome};
+use super::control::{Control, Gate};
 use super::decide::Rules;
 use super::lap;
 use super::limiter::{self, Limiter};
+use super::pause;
 use super::shared::{self, ClaimCounter};
 use super::store::{self, Applied};
 use crate::queue::{self, KIND_HANDLE};
@@ -36,6 +38,11 @@ pub struct Opts {
     pub large_domains: Vec<String>,
     /// How much of `accounts` a lap reads at a time, in 8 kB blocks.
     pub lap_chunk_blocks: i64,
+    /// The control checks. Empty runs without them, which only the
+    /// operator can ask for.
+    pub controls: Vec<Control>,
+    /// When a control pause starts, results this recent are checked again.
+    pub lookback: Duration,
 }
 
 /// How many queued items are read at a time, and how many reads one pass
@@ -63,7 +70,9 @@ pub(super) struct Counts {
 }
 
 pub(super) struct Shared {
-    checker: Checker,
+    pub(super) checker: Checker,
+    /// Closed while the control checks say the fault is lodestar's own.
+    pub(super) gate: Gate,
     pub(super) limiter: Limiter,
     pub(super) rules: Rules,
     clients: Vec<Mutex<Client>>,
@@ -78,7 +87,12 @@ impl Shared {
 
     /// Resolve under the limiter. A caller that already holds a slot for
     /// the domain passes it in.
-    async fn resolve(&self, claim: &str, domain: &str, held: Option<limiter::Permit>) -> super::check::Check {
+    ///
+    /// None if a control pause started while the check was in flight: its
+    /// result is suspect and is dropped.
+    async fn resolve(&self, claim: &str, domain: &str, held: Option<limiter::Permit>) -> Option<super::check::Check> {
+        self.gate.wait_open().await;
+        let epoch = self.gate.epoch();
         let found = {
             let _permit = match held {
                 Some(p) => p,
@@ -89,14 +103,23 @@ impl Shared {
         if let Some(wait) = found.retry_after {
             self.limiter.hold(domain, wait.min(self.rules.retry_after_ceiling));
         }
-        found
+        (self.gate.epoch() == epoch).then_some(found)
     }
 }
 
 /// Check one account's handle and apply what is found. Leaves the queue
 /// row in place if the claim changed meanwhile, so the new claim is checked.
 pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, domain: String, held: Option<limiter::Permit>) -> Result<()> {
-    let found = shared.resolve(&claim, &domain, held).await;
+    let from_lap = held.is_some();
+    let Some(found) = shared.resolve(&claim, &domain, held).await else {
+        // Dropped. A queued check keeps its row; a lap's check has none,
+        // so it is queued to be made again.
+        if from_lap {
+            let client = shared.db().lock().await;
+            queue::push(&*client, queue::REASON_RECHECK, &[queue::Item { did: &did, kind: KIND_HANDLE, listed: false }]).await?;
+        }
+        return Ok(());
+    };
     let at = chrono::Utc::now().timestamp_millis();
     let mut client = shared.db().lock().await;
     let applied = store::apply_handle_result(&mut client, &shared.rules, &did, &claim, &found, at, false).await?;
@@ -109,6 +132,7 @@ pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, 
                 Outcome::Inconclusive(_) => &shared.counts.failing,
             };
             counter.fetch_add(1, Ordering::Relaxed);
+            shared.gate.note(&did);
             true
         }
         Applied::Stale => {
@@ -128,7 +152,9 @@ pub(super) async fn check_one(shared: Arc<Shared>, did: Vec<u8>, claim: String, 
 
 /// Resolve a shared handle once and apply it to its row.
 async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Result<()> {
-    let found = shared.resolve(&handle, &domain, None).await;
+    let Some(found) = shared.resolve(&handle, &domain, None).await else {
+        return Ok(());
+    };
     let at = chrono::Utc::now().timestamp_millis();
     let mut client = shared.db().lock().await;
     shared::apply(&mut client, &shared.rules, &handle, &found, at, false).await?;
@@ -203,7 +229,13 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     for _ in 0..opts.connections.max(1) {
         clients.push(Mutex::new(db::connect(&opts.database_url).await?));
     }
-    let shared = Arc::new(Shared { checker, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default() });
+    let gate = Gate::new(opts.lookback);
+    if opts.controls.is_empty() {
+        // Only when the operator has said to run without them.
+        tracing::warn!("running with no control checks: lodestar cannot tell its own outage from the network's");
+        gate.open();
+    }
+    let shared = Arc::new(Shared { checker, gate, limiter: Limiter::new(limits), rules: Rules::default(), clients, next: AtomicUsize::new(0), counts: Counts::default() });
     let mut control = db::connect(&opts.database_url).await?;
 
     // Which handles are shared has to be known before anything is checked.
@@ -216,6 +248,12 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         n
     };
     tracing::info!(claims, seconds = t.elapsed().as_secs(), "verification worker started; claims counted");
+
+    let mut controls: JoinSet<Result<()>> = JoinSet::new();
+    if !opts.controls.is_empty() {
+        let client = db::connect(&opts.database_url).await?;
+        controls.spawn(pause::run(shared.clone(), opts.controls.clone(), client, opts.lookback, stop.clone()));
+    }
 
     // The background sweep: one lap for everything but the large domains,
     // and a walker for each of those.
@@ -249,7 +287,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         // does not hide the rest.
         let mut started = 0usize;
         let mut after: Option<(i16, f64, Vec<u8>)> = None;
-        for _ in 0..PAGES {
+        // While verification is paused nothing is started.
+        let pages = if shared.gate.is_open() { PAGES } else { 0 };
+        for _ in 0..pages {
             let (reason, due, did) = after.clone().unwrap_or((0, 0.0, Vec::new()));
             let rows = control
                 .query(
@@ -316,7 +356,10 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
             }
-            _ = shared_look.tick() => {
+            Some(ended) = controls.join_next(), if !controls.is_empty() => {
+                ended??;
+            }
+            _ = shared_look.tick(), if shared.gate.is_open() => {
                 for handle in shared::due(&control, &shared.rules, opts.early_refresh_floor.as_secs_f64()).await? {
                     let key = Key::Handle(handle.clone());
                     if running.keys.contains(&key) {

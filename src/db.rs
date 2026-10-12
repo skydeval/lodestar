@@ -130,6 +130,20 @@ CREATE TABLE IF NOT EXISTS shared_handles (
     did              bytea
 );
 
+-- What lodestar remembers about each control check, so a restart changes
+-- nothing: since when it has failed every round, and whether it has been
+-- left out of the count.
+CREATE TABLE IF NOT EXISTS control_state (
+    handle        text NOT NULL,
+    https         boolean NOT NULL,
+    failing_since timestamptz,
+    rounds        bigint NOT NULL DEFAULT 0,
+    other_passed  bigint NOT NULL DEFAULT 0,
+    left_out      boolean NOT NULL DEFAULT false,
+    last          boolean,
+    PRIMARY KEY (handle, https)
+);
+
 -- The readable view. The tables hold DIDs, keys and endpoints in compact
 -- form; these present them as text for an operator looking by hand.
 CREATE OR REPLACE FUNCTION lodestar_b32(b bytea) RETURNS text LANGUAGE plpgsql IMMUTABLE STRICT AS $$

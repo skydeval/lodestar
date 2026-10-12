@@ -156,6 +156,11 @@ impl Lap<'_> {
             if block >= blocks {
                 return Ok(true);
             }
+            // While verification is paused a lap waits where it is.
+            tokio::select! {
+                _ = stop.changed() => return Ok(false),
+                _ = self.shared.gate.wait_open() => {}
+            }
             let to = (block + self.opts.chunk_blocks).min(blocks);
             if !self.chunk(pass, block, to, lap_started, stop).await? {
                 return Ok(false);

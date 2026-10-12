@@ -69,6 +69,17 @@ Work towards 0.1.0.
   own, paced by that domain's rate. A lap starts once the PLC source
   is at the tip and the first relay walk is done, and no sooner than
   7 days after the last one started.
+- Control checks. A few handles with known DIDs, each resolved by
+  DNS or by HTTPS, are checked every minute. If more than half of
+  either method's controls fail, all outbound verification pauses;
+  it resumes after three clear rounds, and nothing runs after a
+  start until one clear round. A check in flight when a pause
+  starts is dropped, results applied in the ten minutes before are
+  checked again, and when the pause ends every failure clock moves
+  forward by its length. A control that has gone bad on its own is
+  left out of the count after a day, never taking a method below
+  two. `lodestar verify` refuses to start without at least two
+  controls of each method.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

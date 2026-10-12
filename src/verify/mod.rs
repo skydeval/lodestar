@@ -2,9 +2,11 @@
 //! hosts. It checks handles and fetches `did:web` documents.
 
 pub mod check;
+pub mod control;
 pub mod decide;
 pub mod lap;
 pub mod limiter;
+pub mod pause;
 pub mod shared;
 pub mod store;
 pub mod worker;

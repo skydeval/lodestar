@@ -128,6 +128,17 @@ enum Cmd {
         /// How much of the accounts table a lap reads at a time, in blocks.
         #[arg(long, default_value_t = 500)]
         lap_chunk_blocks: i64,
+        /// A control check, as dns:handle=did or https:handle=did. At
+        /// least two of each method are needed, each on its own domain.
+        #[arg(long = "control", env = "LODESTAR_CONTROLS", value_delimiter = ',')]
+        controls: Vec<String>,
+        /// Run with no control checks. Lodestar then cannot tell its own
+        /// outage from the network's.
+        #[arg(long)]
+        unsafe_no_controls: bool,
+        /// When a control pause starts, results this recent are checked again.
+        #[arg(long, default_value_t = 600)]
+        lookback_seconds: u64,
     },
     /// The API role: serve lookups.
     Api {
@@ -209,7 +220,23 @@ async fn main() -> Result<()> {
             drop(client);
             ingest::run(opts).await?;
         }
-        Cmd::Verify { resolver, connections, shared_threshold, shared_refresh_minutes, large_domains, lap_chunk_blocks } => {
+        Cmd::Verify {
+            resolver,
+            connections,
+            shared_threshold,
+            shared_refresh_minutes,
+            large_domains,
+            lap_chunk_blocks,
+            controls,
+            unsafe_no_controls,
+            lookback_seconds,
+        } => {
+            let controls = controls.iter().map(|c| verify::control::parse(c)).collect::<Result<Vec<_>>>()?;
+            if unsafe_no_controls {
+                anyhow::ensure!(controls.is_empty(), "--unsafe-no-controls and --control cannot both be given");
+            } else {
+                verify::control::validate(&controls)?;
+            }
             drop(client);
             let opts = verify::worker::Opts {
                 database_url: cli.database_url,
@@ -220,6 +247,8 @@ async fn main() -> Result<()> {
                 early_refresh_floor: Duration::from_secs(shared_refresh_minutes * 60),
                 large_domains,
                 lap_chunk_blocks: lap_chunk_blocks.max(1),
+                controls,
+                lookback: Duration::from_secs(lookback_seconds),
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }
