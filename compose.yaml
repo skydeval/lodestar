@@ -1,0 +1,73 @@
+# Lodestar and its database. Copy .env.example to .env and fill it in.
+#
+# Each role is its own container, from the same image. The API role makes
+# no outbound request and is the only one consumers reach. The
+# verification role is the only one that asks arbitrary hosts.
+
+x-lodestar: &lodestar
+  image: lodestar:${LODESTAR_VERSION:-0.1.0}
+  build: .
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    LODESTAR_DATABASE_URL: postgres://lodestar:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/lodestar
+    LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
+  # Give a role time to commit its cursor and finish checks in flight.
+  stop_grace_period: 40s
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lodestar
+      POSTGRES_DB: lodestar
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Sized for the reference host: 8 GB of memory, shared with the roles.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
+      - -c
+      - effective_cache_size=${POSTGRES_CACHE_SIZE:-5GB}
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - max_wal_size=3GB
+      - -c
+      - checkpoint_timeout=15min
+    shm_size: 1gb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lodestar -d lodestar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ingest:
+    <<: *lodestar
+    command: ["ingest"]
+
+  verify:
+    <<: *lodestar
+    command: ["verify"]
+    environment:
+      LODESTAR_DATABASE_URL: postgres://lodestar:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/lodestar
+      LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
+      LODESTAR_CONTROLS: ${LODESTAR_CONTROLS:?set LODESTAR_CONTROLS in .env}
+      LODESTAR_PROFILE: ${LODESTAR_PROFILE:-vps}
+      LODESTAR_RATES: ${LODESTAR_RATES:-}
+
+  api:
+    <<: *lodestar
+    command: ["api", "--listen", "0.0.0.0:8080"]
+    # Internal only: there is no authentication. Reach it over a private
+    # network, or change this to an address on one.
+    ports:
+      - "${LODESTAR_API_BIND:-127.0.0.1:8080}:8080"
+
+volumes:
+  pgdata:

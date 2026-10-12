@@ -33,9 +33,40 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
+        Limits::profile("vps")
+    }
+}
+
+impl Limits {
+    /// The starting values of a named profile. `vps` is sized for the
+    /// reference host. `hobbyist` is for a small board or a shared
+    /// machine: it lowers pace only, never what lodestar does.
+    pub fn profile(name: &str) -> Self {
         let mut overrides = HashMap::new();
-        overrides.insert("bsky.social".to_owned(), DomainLimit { rate: 320.0, in_flight: 100 });
-        Limits { default: DomainLimit { rate: 1.0, in_flight: 8 }, overrides, global_rate: 400.0, global_in_flight: 160 }
+        if name == "hobbyist" {
+            overrides.insert("bsky.social".to_owned(), DomainLimit { rate: 20.0, in_flight: 8 });
+            Limits { default: DomainLimit { rate: 1.0, in_flight: 4 }, overrides, global_rate: 40.0, global_in_flight: 24 }
+        } else {
+            overrides.insert("bsky.social".to_owned(), DomainLimit { rate: 320.0, in_flight: 100 });
+            Limits { default: DomainLimit { rate: 1.0, in_flight: 8 }, overrides, global_rate: 400.0, global_in_flight: 160 }
+        }
+    }
+
+    /// Apply `domain=rate:in_flight` settings over the profile's.
+    pub fn with_overrides(mut self, specs: &[String]) -> anyhow::Result<Self> {
+        for spec in specs {
+            let parsed = spec.split_once('=').and_then(|(d, v)| {
+                let (rate, cap) = v.split_once(':')?;
+                Some((d.trim().to_ascii_lowercase(), rate.parse::<f64>().ok()?, cap.parse::<usize>().ok()?))
+            });
+            match parsed {
+                Some((domain, rate, in_flight)) if rate > 0.0 && in_flight > 0 => {
+                    self.overrides.insert(domain, DomainLimit { rate, in_flight });
+                }
+                _ => anyhow::bail!("a domain rate is written domain=rate:in_flight, not {spec}"),
+            }
+        }
+        Ok(self)
     }
 }
 
@@ -325,6 +356,19 @@ mod tests {
         let _a = l.acquire("one.com").await;
         let _b = l.acquire("two.com").await;
         assert!(l.try_acquire("three.com").is_none());
+    }
+
+    #[test]
+    fn profiles_and_overrides() {
+        let small = Limits::profile("hobbyist");
+        assert!(small.global_rate < Limits::profile("vps").global_rate);
+        assert_eq!(small.overrides["bsky.social"].rate, 20.0);
+        let l = Limits::profile("vps").with_overrides(&["Example.com=5:20".to_owned(), "bsky.social=160:60".to_owned()]).unwrap();
+        assert_eq!(l.overrides["example.com"], DomainLimit { rate: 5.0, in_flight: 20 });
+        assert_eq!(l.overrides["bsky.social"], DomainLimit { rate: 160.0, in_flight: 60 });
+        for bad in ["example.com", "example.com=5", "example.com=0:5", "example.com=x:y"] {
+            assert!(Limits::profile("vps").with_overrides(&[bad.to_owned()]).is_err(), "{bad}");
+        }
     }
 
     #[test]

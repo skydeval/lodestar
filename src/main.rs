@@ -139,6 +139,12 @@ enum Cmd {
         /// When a control pause starts, results this recent are checked again.
         #[arg(long, default_value_t = 600)]
         lookback_seconds: u64,
+        /// The starting values for rates and caps: vps or hobbyist.
+        #[arg(long, env = "LODESTAR_PROFILE", default_value = "vps", value_parser = ["vps", "hobbyist"])]
+        profile: String,
+        /// A domain's rate and in-flight cap, as domain=rate:in_flight.
+        #[arg(long = "rate", env = "LODESTAR_RATES", value_delimiter = ',')]
+        rates: Vec<String>,
     },
     /// The API role: serve lookups.
     Api {
@@ -236,7 +242,10 @@ async fn main() -> Result<()> {
             controls,
             unsafe_no_controls,
             lookback_seconds,
+            profile,
+            rates,
         } => {
+            let limits = verify::limiter::Limits::profile(&profile).with_overrides(&rates)?;
             let controls = controls.iter().map(|c| verify::control::parse(c)).collect::<Result<Vec<_>>>()?;
             if unsafe_no_controls {
                 anyhow::ensure!(controls.is_empty(), "--unsafe-no-controls and --control cannot both be given");
@@ -255,6 +264,7 @@ async fn main() -> Result<()> {
                 lap_chunk_blocks: lap_chunk_blocks.max(1),
                 controls,
                 lookback: Duration::from_secs(lookback_seconds),
+                limits,
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }

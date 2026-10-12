@@ -116,6 +116,11 @@ Work towards 0.1.0.
   table sizes, queue and verification figures in Prometheus format.
   The verification role writes its status to the database each
   minute for the API role to read.
+- A container image and a compose file: Postgres and the three
+  roles, each role its own container from one image.
+- Config profiles for rates, `vps` and `hobbyist`, and per-domain
+  rate overrides.
+- A README for operators.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch

@@ -703,7 +703,8 @@ pub async fn run(opts: Opts) -> Result<()> {
     tracing::info!(listen = %opts.listen, "API role started");
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            let mut stop = crate::ingest::stop_signal();
+            let _ = stop.changed().await;
         })
         .await
         .context("serving")?;

@@ -46,6 +46,8 @@ pub struct Opts {
     pub controls: Vec<Control>,
     /// When a control pause starts, results this recent are checked again.
     pub lookback: Duration,
+    /// Rates and caps: a profile's, with the operator's overrides.
+    pub limits: limiter::Limits,
 }
 
 /// How many queued items are read at a time, and how many reads one pass
@@ -348,7 +350,7 @@ impl Running {
 
 pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let checker = Checker::new(&opts.resolver, &opts.user_agent, &super::check::Limits::default())?;
-    let limits = limiter::Limits::default();
+    let limits = opts.limits.clone();
     let caps: HashMap<String, usize> = limits.overrides.iter().map(|(d, l)| (d.clone(), l.in_flight)).collect();
     let default_cap = limits.default.in_flight;
     let cap_of = |domain: &str| caps.get(domain).copied().unwrap_or(default_cap);

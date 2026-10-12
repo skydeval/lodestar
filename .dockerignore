@@ -1,0 +1,8 @@
+target
+.git
+docs
+recon
+scripts
+.claude
+.chainlink
+.env
