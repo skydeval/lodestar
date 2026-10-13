@@ -81,10 +81,10 @@ impl Identity {
         };
         let gone = self.recent.split_off(keep);
         for r in &gone {
-            if let Some(h) = r.hist_seq {
-                if let Some(ix) = self.hist.iter().position(|x| x.seq == h) {
-                    self.drop_row(ix);
-                }
+            if let Some(h) = r.hist_seq
+                && let Some(ix) = self.hist.iter().position(|x| x.seq == h)
+            {
+                self.drop_row(ix);
             }
             if !r.new {
                 self.recent_deleted.push(r.seq);

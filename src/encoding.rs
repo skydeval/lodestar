@@ -95,15 +95,14 @@ pub fn b58_encode(data: &[u8]) -> String {
 /// A `did:plc` is one tag byte and its 15 bytes. Any other DID is a tag
 /// byte and its text.
 pub fn did_bytes(did: &str) -> Vec<u8> {
-    if let Some(id) = did.strip_prefix("did:plc:") {
-        if id.len() == 24 {
-            if let Some(raw) = b32_decode(id) {
-                let mut out = Vec::with_capacity(16);
-                out.push(DID_PLC);
-                out.extend_from_slice(&raw);
-                return out;
-            }
-        }
+    if let Some(id) = did.strip_prefix("did:plc:")
+        && id.len() == 24
+        && let Some(raw) = b32_decode(id)
+    {
+        let mut out = Vec::with_capacity(16);
+        out.push(DID_PLC);
+        out.extend_from_slice(&raw);
+        return out;
     }
     let mut out = Vec::with_capacity(1 + did.len());
     out.push(DID_OTHER);
@@ -123,12 +122,11 @@ pub fn did_text(bytes: &[u8]) -> Option<String> {
 /// A signing key as stored: the multicodec-prefixed key bytes of a
 /// `did:key:z…`, or the text as given when it is not one.
 pub fn key_bytes(key: &str) -> Vec<u8> {
-    if let Some(raw) = key.strip_prefix("did:key:z").and_then(b58_decode) {
-        if raw.first().is_some_and(|b| *b != KEY_TEXT)
-            && format!("did:key:z{}", b58_encode(&raw)) == key
-        {
-            return raw;
-        }
+    if let Some(raw) = key.strip_prefix("did:key:z").and_then(b58_decode)
+        && raw.first().is_some_and(|b| *b != KEY_TEXT)
+        && format!("did:key:z{}", b58_encode(&raw)) == key
+    {
+        return raw;
     }
     let mut out = Vec::with_capacity(1 + key.len());
     out.push(KEY_TEXT);

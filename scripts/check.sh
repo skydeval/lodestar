@@ -15,7 +15,8 @@ case "${1:-test}" in
         exit "${PIPESTATUS[0]}"
         ;;
     clippy)
-        cargo clippy --all-targets 2>&1 | tail -n 80
+        # As CI runs it: the newest stable toolchain, warnings refused.
+        cargo +stable clippy --locked --all-targets -- -D warnings 2>&1 | tail -n 80
         exit "${PIPESTATUS[0]}"
         ;;
 esac

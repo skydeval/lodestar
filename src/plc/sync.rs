@@ -191,7 +191,7 @@ impl Source<'_> {
         self.nullified += stats.nullified;
         self.newest = Some(last.created_at.clone());
         // Prune by operation time, so it works the same during the first sync.
-        if self.pages % 200 == 0 || self.last_prune.elapsed() > Duration::from_secs(600) {
+        if self.pages.is_multiple_of(200) || self.last_prune.elapsed() > Duration::from_secs(600) {
             store::prune_recent(self.client, &last.created_at, self.window_ms).await?;
             self.last_prune = Instant::now();
         }
@@ -266,7 +266,7 @@ impl Source<'_> {
             };
             let short = ops.len() < self.opts.count as usize;
             self.apply(&ops).await?;
-            if !ops.is_empty() && self.pages % 500 == 0 {
+            if !ops.is_empty() && self.pages.is_multiple_of(500) {
                 self.progress("PLC sync");
             }
             if short {
