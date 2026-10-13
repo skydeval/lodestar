@@ -56,6 +56,14 @@ const PAGE: i64 = 2000;
 const PAGES: usize = 10;
 /// How long the worker waits when there is nothing it can start.
 const IDLE: Duration = Duration::from_millis(250);
+/// The longest a pass over the queue goes on reading further pages.
+const PASS_BUDGET: Duration = Duration::from_millis(500);
+/// How long the queue's rows for a domain are passed over once it is found
+/// to have no room for another waiting check.
+const FULL_FOR: Duration = Duration::from_secs(1);
+/// And once it is found to be paused. A paused domain is looked at again
+/// this often, which is when a probe of it can be started.
+const PAUSED_FOR: Duration = Duration::from_secs(30);
 /// How often failing checks are looked at for retries that have come due.
 const RETRY_LOOK: Duration = Duration::from_secs(30);
 /// How often the API role's live requests are looked for.
@@ -188,6 +196,7 @@ pub(super) async fn check_one(
                     did: &did,
                     kind: KIND_HANDLE,
                     listed: false,
+                    domain: None,
                 }],
             )
             .await?;
@@ -220,6 +229,7 @@ pub(super) async fn check_one(
                     did: &did,
                     kind: KIND_HANDLE,
                     listed: false,
+                    domain: None,
                 }],
             )
             .await?;
@@ -587,6 +597,12 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut report = tokio::time::interval(Duration::from_secs(60));
     report.tick().await;
     let mut last_pass: Option<std::time::Instant> = None;
+    let mut last_started = 1usize;
+    // Domains whose queued rows are not worth reading for now, and until
+    // when: one with no room for another waiting check, or one that is
+    // paused. Without this a domain with a great many rows queued fills
+    // every pass, and the domains behind it are never reached.
+    let mut passed_over: HashMap<String, std::time::Instant> = HashMap::new();
 
     loop {
         while let Some(joined) = running.tasks.try_join_next() {
@@ -605,7 +621,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         // is checked before the claims have been counted.
         // Nor more often than this: with a long queue, checks finish all
         // the time, and a pass for each would read the queue without rest.
-        let rested = last_pass.is_none_or(|t| t.elapsed() >= IDLE);
+        // A pass that started nothing is followed by a longer rest.
+        let rest = if last_started == 0 { IDLE * 4 } else { IDLE };
+        let rested = last_pass.is_none_or(|t| t.elapsed() >= rest);
         let pages =
             if rested && shared.gate.is_open() && shared.claims_ready.load(Ordering::Acquire) {
                 last_pass = Some(pass_began);
@@ -615,24 +633,29 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             };
         for _ in 0..pages {
             let (reason, due, did) = after.clone().unwrap_or((0, "epoch".to_owned(), Vec::new()));
+            passed_over.retain(|_, until| *until > pass_began);
+            let skip: Vec<&str> = passed_over.keys().map(String::as_str).collect();
             // The page is taken from the queue alone, along its index, and
             // only its rows are looked up in `accounts`. Joined first, a
             // long queue has every page read all of `accounts`.
             let rows = control
                 .query(
-                    "SELECT q.did, q.reason, q.due_at::text, a.handle_claim, a.status \
-                     FROM (SELECT v.did, v.reason, v.due_at FROM verify_due v \
+                    "SELECT q.did, q.reason, q.due_at::text, a.handle_claim, a.status, q.domain \
+                     FROM (SELECT v.did, v.reason, v.due_at, v.domain FROM verify_due v \
                            WHERE v.kind = $1 AND v.due_at <= now() AND (v.reason, v.due_at, v.did) > ($3, $4::text::timestamptz, $5) \
+                             AND (v.domain IS NULL OR v.domain <> ALL($6)) \
                            ORDER BY v.reason, v.due_at, v.did LIMIT $2) q \
                      LEFT JOIN accounts a ON a.did = q.did \
                      ORDER BY q.reason, q.due_at, q.did",
-                    &[&KIND_HANDLE, &PAGE, &reason, &due, &did],
+                    &[&KIND_HANDLE, &PAGE, &reason, &due, &did, &skip],
                 )
                 .await
                 .context("reading the queue")?;
             let full_page = rows.len() as i64 == PAGE;
             read += rows.len();
             let mut dead: Vec<Vec<u8>> = Vec::new();
+            // Rows whose domain the queue does not have, or has wrong.
+            let mut learned: (Vec<Vec<u8>>, Vec<String>) = (Vec::new(), Vec::new());
             for r in &rows {
                 let did: Vec<u8> = r.get(0);
                 let reason: i16 = r.get(1);
@@ -668,7 +691,12 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     continue;
                 }
                 let domain = limiter::registrable(&claim).to_owned();
+                if r.get::<_, Option<&str>>(5) != Some(domain.as_str()) {
+                    learned.0.push(did.clone());
+                    learned.1.push(domain.clone());
+                }
                 if !running.has_room(&domain, cap_of(&domain)) {
+                    passed_over.insert(domain, pass_began + FULL_FOR);
                     continue;
                 }
                 let kind = match reason {
@@ -682,7 +710,10 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     chrono::Utc::now().timestamp_millis(),
                 ) {
                     // The domain is paused: the entry waits where it is.
-                    Admit::Wait => continue,
+                    Admit::Wait => {
+                        passed_over.insert(domain, pass_began + PAUSED_FOR);
+                        continue;
+                    }
                     Admit::Probe => How { kind, probe: true },
                     Admit::Go => How { kind, probe: false },
                 };
@@ -702,11 +733,24 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     )
                     .await?;
             }
-            if !full_page {
+            if !learned.0.is_empty() {
+                control
+                    .execute(
+                        "UPDATE verify_due v SET domain = t.domain FROM UNNEST($1::bytea[], $2::text[]) AS t(did, domain) \
+                         WHERE v.did = t.did AND v.kind = $3",
+                        &[&learned.0, &learned.1, &KIND_HANDLE],
+                    )
+                    .await?;
+            }
+            // A pass is kept short: requests from consumers and changed
+            // claims wait on it. What it did not reach, the next pass
+            // reaches sooner, since it reads past what this one learned.
+            if !full_page || pass_began.elapsed() >= PASS_BUDGET {
                 break;
             }
         }
         if pages != 0 {
+            last_started = started;
             tracing::debug!(
                 read,
                 started,

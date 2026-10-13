@@ -1,6 +1,9 @@
 //! The relay walk: page a relay's `listRepos` to find `did:web` accounts
 //! and to mark which identities have a repo. It runs once the PLC source
 //! has reached the tip, and again on an interval or when asked.
+//!
+//! The marks are rows in `listed`, not a column of `accounts`: a page of
+//! the listing is one insert of a thousand small rows.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -95,10 +98,9 @@ async fn apply(
         .map(|d| encoding::did_bytes(d))
         .collect();
     let tx = client.transaction().await?;
-    // A mark for an identity with no row creates nothing.
     tally.marked += tx
         .execute(
-            "UPDATE accounts SET listed = true WHERE did = ANY($1) AND NOT listed",
+            "INSERT INTO listed (did) SELECT unnest($1::bytea[]) ON CONFLICT DO NOTHING",
             &[&keys],
         )
         .await
@@ -119,6 +121,7 @@ async fn apply(
                 did: d.as_slice(),
                 kind: queue::KIND_DOCUMENT,
                 listed: true,
+                domain: None,
             })
             .collect();
         tally.web_found += queue::push(&tx, queue::REASON_WALK, &unseen).await?;

@@ -178,6 +178,7 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
                 did: did.as_slice(),
                 kind: queue::KIND_DOCUMENT,
                 listed: *active,
+                domain: None,
             });
         } else if has_row && *identity && plc_live {
             // A did:plc's state comes only from PLC; the event asks for its
@@ -186,6 +187,7 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
                 did: did.as_slice(),
                 kind: queue::KIND_HANDLE,
                 listed: false,
+                domain: None,
             });
         }
     }
@@ -193,7 +195,7 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
     queue::push(&tx, queue::REASON_EVENT, &work).await?;
     if !mark.is_empty() {
         tx.execute(
-            "UPDATE accounts SET listed = true WHERE did = ANY($1) AND NOT listed",
+            "INSERT INTO listed (did) SELECT unnest($1::bytea[]) ON CONFLICT DO NOTHING",
             &[&mark],
         )
         .await

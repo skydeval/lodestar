@@ -238,6 +238,7 @@ pub async fn apply_page(
                 did: did.as_slice(),
                 kind: queue::KIND_HANDLE,
                 listed: false,
+                domain: None,
             });
         }
         let pds_id = pds.id(id.pds.as_deref())?;

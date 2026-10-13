@@ -173,6 +173,15 @@ Work towards 0.1.0.
     the first refusal, with a build script for hosts older than the
     recon host.
 
+### Changed
+
+- The mark for an identity that has a repo is a row in its own table,
+  `listed`, and no longer a column of `accounts`. Setting the column
+  rewrote the row and its key, some twenty million times in a relay
+  walk, which made the first walk take over four hours on the
+  reference host. A database that has the column is moved across
+  when a role starts.
+
 ### Fixed
 
 - The verification role counted handle claims once, when it started.
@@ -188,6 +197,12 @@ Work towards 0.1.0.
   and the role's status went unreported. The queue is now read along
   an index, only the rows read are looked up in `accounts`, and it is
   read at most four times a second.
+- A domain with a great many handles queued filled every read of the
+  queue, so the domains behind it were not reached. A queued handle
+  now carries its registrable domain, and the queue is read past the
+  rows of a domain that has no room or is paused. A read is also
+  kept to half a second, so that consumers' requests and changed
+  claims do not wait on it.
 
 - Recon PLC backfill compared an operation's `prev` with the previous
   operation's CID as text. The directory accepts a `prev` written in

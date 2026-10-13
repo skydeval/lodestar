@@ -110,6 +110,7 @@ async fn pause_started(client: &Client, shared: &Shared, lookback: Duration) -> 
             did: d.as_slice(),
             kind: queue::KIND_HANDLE,
             listed: false,
+            domain: None,
         })
         .collect();
     queue::push(client, queue::REASON_RECHECK, &items).await?;

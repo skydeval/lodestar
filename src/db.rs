@@ -36,6 +36,9 @@ pub async fn connect(url: &str) -> Result<Client> {
 ///
 /// Columns are ordered widest alignment first, so rows carry no padding.
 const SCHEMA: &str = r#"
+-- Every role runs this when it starts. One at a time.
+SELECT pg_advisory_xact_lock(7106501);
+
 CREATE TABLE IF NOT EXISTS pds_endpoints (
     id       integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     endpoint text NOT NULL
@@ -50,7 +53,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     method            smallint NOT NULL,
     status            smallint NOT NULL,
     handle_status     smallint NOT NULL,
-    listed            boolean NOT NULL DEFAULT false,
     did               bytea PRIMARY KEY,
     signing_key       bytea,
     handle_claim      text
@@ -92,6 +94,23 @@ ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS lap_started_at timestamptz;
 -- Where a listing walk has got to. A listing's cursor is opaque text.
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS position text;
 
+-- The identities known to have a repo: those a relay lists, and those an
+-- active account event names. The sweep checks these first. Kept apart
+-- from `accounts` because a mark there rewrites the row and its key, and
+-- a walk sets some twenty million of them; here a mark is one small row.
+-- A DID may be listed before it has an account row.
+CREATE TABLE IF NOT EXISTS listed (did bytea PRIMARY KEY);
+-- The mark was once a column of `accounts`.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'accounts' AND column_name = 'listed') THEN
+        EXECUTE 'INSERT INTO listed (did) SELECT did FROM accounts WHERE listed ON CONFLICT DO NOTHING';
+        DROP VIEW IF EXISTS accounts_readable;
+        ALTER TABLE accounts DROP COLUMN listed;
+    END IF;
+END $$;
+DROP TABLE IF EXISTS walk_listed;
+
 -- Work for the verification role that should not wait for a lap: a handle
 -- to check or a did:web document to fetch. One row per DID and kind of
 -- work. `reason` orders the work; lower is sooner.
@@ -103,8 +122,12 @@ CREATE TABLE IF NOT EXISTS verify_due (
     did    bytea NOT NULL,
     PRIMARY KEY (did, kind)
 );
+-- The registrable domain of the handle to check, where it is known. The
+-- queue is read past the rows of a domain that has no room.
+ALTER TABLE verify_due ADD COLUMN IF NOT EXISTS domain text;
 -- The order the verification role takes work in.
-CREATE INDEX IF NOT EXISTS verify_due_order ON verify_due (kind, reason, due_at, did);
+DROP INDEX IF EXISTS verify_due_order;
+CREATE INDEX IF NOT EXISTS verify_due_read ON verify_due (kind, reason, due_at, did) INCLUDE (domain);
 
 -- A check that is failing or awaiting confirmation and has not settled.
 -- Healthy handles have no row. kind: 0 the handle, 1 the did:web document.
@@ -249,7 +272,7 @@ SELECT lodestar_did(a.did) AS did,
             WHEN 3 THEN 'unreachable' WHEN 4 THEN 'pending' ELSE 'none' END AS handle_status,
        a.handle_checked_at,
        CASE a.status WHEN 0 THEN 'active' WHEN 1 THEN 'tombstoned' ELSE 'unresolvable' END AS status,
-       a.listed,
+       EXISTS (SELECT 1 FROM listed l WHERE l.did = a.did) AS listed,
        a.created_at
 FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id;
 

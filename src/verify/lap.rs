@@ -99,7 +99,7 @@ impl Lap<'_> {
                  WHERE a.ctid >= $1::text::tid AND a.ctid < $2::text::tid \
                    AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $5 \
                    AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($3)) \
-                   AND ($4 OR a.listed) \
+                   AND ($4 OR (SELECT true FROM listed l WHERE l.did = a.did)) \
                    AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
                 &[&format!("({from},0)"), &format!("({to},0)"), &lap_started, &(pass == Pass::All), &db::HANDLE_NONE],
             )
@@ -107,7 +107,7 @@ impl Lap<'_> {
             .context("reading a stretch of accounts")?;
 
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
-        let mut overflow: Vec<Vec<u8>> = Vec::new();
+        let mut overflow: Vec<(Vec<u8>, String)> = Vec::new();
         for r in rows {
             let did: Vec<u8> = r.get(0);
             let claim: String = r.get(1);
@@ -156,7 +156,7 @@ impl Lap<'_> {
                 }
             };
             let Some(how) = how else {
-                overflow.push(did);
+                overflow.push((did, domain));
                 continue;
             };
             let permit = if walker {
@@ -169,7 +169,7 @@ impl Lap<'_> {
                 match self.shared.limiter.try_acquire(&domain) {
                     Some(p) => p,
                     None => {
-                        overflow.push(did);
+                        overflow.push((did, domain));
                         continue;
                     }
                 }
@@ -190,10 +190,11 @@ impl Lap<'_> {
         if !overflow.is_empty() {
             let items: Vec<Item> = overflow
                 .iter()
-                .map(|d| Item {
-                    did: d.as_slice(),
+                .map(|(did, domain)| Item {
+                    did: did.as_slice(),
                     kind: queue::KIND_HANDLE,
                     listed: false,
+                    domain: Some(domain.as_str()),
                 })
                 .collect();
             queue::push(&self.client, queue::REASON_LAP_OVERFLOW, &items).await?;

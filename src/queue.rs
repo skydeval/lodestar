@@ -29,10 +29,14 @@ pub struct Item<'a> {
     pub kind: i16,
     /// For a document fetch: the identity is known to have a repo.
     pub listed: bool,
+    /// For a handle check: the handle's registrable domain, if the caller
+    /// has it. It lets the queue be read past a domain that has no room.
+    pub domain: Option<&'a str>,
 }
 
 /// Queue work. A row that already exists keeps the sooner reason and the
-/// earlier time, and a `listed` mark is never lost.
+/// earlier time, and a `listed` mark is never lost. A changed claim drops
+/// the domain a row had: it was the old claim's.
 pub async fn push(db: &impl GenericClient, reason: i16, items: &[Item<'_>]) -> Result<u64> {
     if items.is_empty() {
         return Ok(0);
@@ -40,12 +44,14 @@ pub async fn push(db: &impl GenericClient, reason: i16, items: &[Item<'_>]) -> R
     let dids: Vec<&[u8]> = items.iter().map(|i| i.did).collect();
     let kinds: Vec<i16> = items.iter().map(|i| i.kind).collect();
     let listed: Vec<bool> = items.iter().map(|i| i.listed).collect();
+    let domains: Vec<Option<&str>> = items.iter().map(|i| i.domain).collect();
     db.execute(
-        "INSERT INTO verify_due (kind, reason, listed, did) \
-         SELECT k, $4::int2, bool_or(l), d FROM UNNEST($1::bytea[], $2::int2[], $3::bool[]) AS t(d, k, l) GROUP BY d, k \
+        "INSERT INTO verify_due (kind, reason, listed, did, domain) \
+         SELECT k, $4::int2, bool_or(l), d, max(dm) FROM UNNEST($1::bytea[], $2::int2[], $3::bool[], $5::text[]) AS t(d, k, l, dm) GROUP BY d, k \
          ON CONFLICT (did, kind) DO UPDATE SET reason = LEAST(verify_due.reason, EXCLUDED.reason), \
-             due_at = LEAST(verify_due.due_at, EXCLUDED.due_at), listed = verify_due.listed OR EXCLUDED.listed",
-        &[&dids, &kinds, &listed, &reason],
+             due_at = LEAST(verify_due.due_at, EXCLUDED.due_at), listed = verify_due.listed OR EXCLUDED.listed, \
+             domain = CASE WHEN $4::int2 = $6::int2 THEN EXCLUDED.domain ELSE COALESCE(EXCLUDED.domain, verify_due.domain) END",
+        &[&dids, &kinds, &listed, &reason, &domains, &REASON_CLAIM],
     )
     .await
     .context("queueing work")

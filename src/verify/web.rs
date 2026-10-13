@@ -156,6 +156,14 @@ pub async fn apply(
     listed: bool,
 ) -> Result<()> {
     let tx = client.transaction().await?;
+    if listed {
+        tx.execute(
+            "INSERT INTO listed (did) VALUES ($1) ON CONFLICT DO NOTHING",
+            &[&did],
+        )
+        .await
+        .context("marking listed")?;
+    }
     let row = tx
         .query_opt(
             "SELECT a.status, a.handle_claim, p.endpoint, w.first_success_at IS NOT NULL \
@@ -176,9 +184,9 @@ pub async fn apply(
             let claim_changed = match &row {
                 None => {
                     tx.execute(
-                        "INSERT INTO accounts (created_at, pds_id, method, status, handle_status, listed, did, signing_key, handle_claim) \
-                         VALUES (now(), $2, $3, $4, $5, $6, $1, $7, $8)",
-                        &[&did, &pds_id, &db::METHOD_WEB, &db::STATUS_ACTIVE, &handle_status, &listed, &doc.key, &doc.claim],
+                        "INSERT INTO accounts (created_at, pds_id, method, status, handle_status, did, signing_key, handle_claim) \
+                         VALUES (now(), $2, $3, $4, $5, $1, $6, $7)",
+                        &[&did, &pds_id, &db::METHOD_WEB, &db::STATUS_ACTIVE, &handle_status, &doc.key, &doc.claim],
                     )
                     .await
                     .context("inserting the account")?;
@@ -209,11 +217,11 @@ pub async fn apply(
                     }
                     let reset = was_claim != doc.claim || status != db::STATUS_ACTIVE;
                     tx.execute(
-                        "UPDATE accounts SET status = $2, pds_id = $3, signing_key = $4, handle_claim = $5, listed = listed OR $6, \
-                             handle_status = CASE WHEN $7 THEN $8 ELSE handle_status END, \
-                             handle_checked_at = CASE WHEN $7 THEN NULL ELSE handle_checked_at END \
+                        "UPDATE accounts SET status = $2, pds_id = $3, signing_key = $4, handle_claim = $5, \
+                             handle_status = CASE WHEN $6 THEN $7 ELSE handle_status END, \
+                             handle_checked_at = CASE WHEN $6 THEN NULL ELSE handle_checked_at END \
                          WHERE did = $1",
-                        &[&did, &db::STATUS_ACTIVE, &pds_id, &doc.key, &doc.claim, &listed, &reset, &handle_status],
+                        &[&did, &db::STATUS_ACTIVE, &pds_id, &doc.key, &doc.claim, &reset, &handle_status],
                     )
                     .await
                     .context("updating the account")?;
@@ -236,6 +244,7 @@ pub async fn apply(
                             did,
                             kind: queue::KIND_HANDLE,
                             listed: false,
+                            domain: None,
                         }],
                     )
                     .await?;
@@ -259,17 +268,11 @@ pub async fn apply(
                 // Known, but never resolved: stored so it is not found
                 // afresh by every walk.
                 tx.execute(
-                    "INSERT INTO accounts (created_at, method, status, handle_status, listed, did) VALUES (now(), $2, $3, $4, $5, $1)",
-                    &[&did, &db::METHOD_WEB, &db::STATUS_UNRESOLVABLE, &db::HANDLE_NONE, &listed],
+                    "INSERT INTO accounts (created_at, method, status, handle_status, did) VALUES (now(), $2, $3, $4, $1)",
+                    &[&did, &db::METHOD_WEB, &db::STATUS_UNRESOLVABLE, &db::HANDLE_NONE],
                 )
                 .await
                 .context("inserting the unresolvable account")?;
-            } else if listed {
-                tx.execute(
-                    "UPDATE accounts SET listed = true WHERE did = $1 AND NOT listed",
-                    &[&did],
-                )
-                .await?;
             }
             tx.execute(
                 "INSERT INTO web_documents (did, last_fetch_at) VALUES ($1, now()) ON CONFLICT (did) DO UPDATE SET last_fetch_at = now()",

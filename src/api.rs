@@ -121,6 +121,7 @@ impl App {
                 did,
                 kind: queue::KIND_HANDLE,
                 listed: false,
+                domain: None,
             }],
         )
         .await?;
@@ -487,6 +488,7 @@ async fn post_accounts(
             did: d.as_slice(),
             kind: queue::KIND_HANDLE,
             listed: false,
+            domain: None,
         })
         .collect();
     queue::push(db, queue::REASON_BATCH, &items).await?;
