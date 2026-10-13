@@ -76,11 +76,12 @@ struct IngestArgs {
     #[arg(long)]
     no_jetstream: bool,
 
-    /// The relay whose listing is walked.
+    /// The relays whose listing may be walked, separated by commas. A
+    /// walk uses whichever answers soonest when it starts.
     #[arg(
         long,
         env = "LODESTAR_RELAY_URL",
-        default_value = "https://relay1.us-east.bsky.network"
+        default_value = "https://relay1.us-east.bsky.network,https://relay1.us-west.bsky.network"
     )]
     relay_url: String,
     /// Least time between listing requests.
@@ -247,7 +248,13 @@ async fn main() -> Result<()> {
                     event_cap: a.jetstream_event_cap,
                 }),
                 walk: (!a.no_walk).then(|| walk::Opts {
-                    url: a.relay_url.trim_end_matches('/').to_owned(),
+                    urls: a
+                        .relay_url
+                        .split(',')
+                        .map(|u| u.trim().trim_end_matches('/').to_owned())
+                        .filter(|u| !u.is_empty())
+                        .collect(),
+                    url: String::new(),
                     user_agent: cli.user_agent.clone(),
                     min_interval: Duration::from_millis(a.walk_min_interval_ms),
                     every: Duration::from_secs(a.walk_every_days.max(1) * 86_400),

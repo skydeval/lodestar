@@ -58,6 +58,11 @@ services:
   ingest:
     <<: *lodestar
     command: ["ingest"]
+    environment:
+      LODESTAR_DATABASE_URL: postgres://lodestar:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/lodestar
+      LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
+      # The relays a walk may use. It picks the one that answers soonest.
+      LODESTAR_RELAY_URL: ${LODESTAR_RELAY_URL:-https://relay1.us-east.bsky.network,https://relay1.us-west.bsky.network}
 
   verify:
     <<: *lodestar

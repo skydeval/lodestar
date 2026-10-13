@@ -178,9 +178,16 @@ Work towards 0.1.0.
 - The mark for an identity that has a repo is a row in its own table,
   `listed`, and no longer a column of `accounts`. Setting the column
   rewrote the row and its key, some twenty million times in a relay
-  walk, which made the first walk take over four hours on the
-  reference host. A database that has the column is moved across
-  when a role starts.
+  walk. A database that has the column is moved across when a role
+  starts.
+- A relay walk looks nothing up as it goes. Each page is appended to
+  a holding table, and what was seen is merged into `listed` in key
+  order when the listing ends.
+- A relay walk times the relays it may use when it starts and uses
+  the one that answers soonest. `LODESTAR_RELAY_URL` takes a list,
+  and by default holds both of Bluesky's. From the reference host one
+  answered a page in a quarter of the time the other took, which was
+  most of a four-hour walk.
 
 ### Fixed
 

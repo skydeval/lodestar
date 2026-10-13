@@ -2,8 +2,12 @@
 //! and to mark which identities have a repo. It runs once the PLC source
 //! has reached the tip, and again on an interval or when asked.
 //!
-//! The marks are rows in `listed`, not a column of `accounts`: a page of
-//! the listing is one insert of a thousand small rows.
+//! The marks are rows in `listed`, not a column of `accounts`. A walk
+//! does not look anything up as it goes: each page is appended to
+//! `walk_seen`, and when the listing ends what was seen is merged into
+//! `listed` in key order, in one pass. Looking each page's thousand DIDs
+//! up as they arrive is a thousand scattered reads, which a host that
+//! cannot hold the table in memory spends most of the walk waiting on.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -20,7 +24,10 @@ pub const SOURCE: &str = "relay-walk";
 
 #[derive(Clone)]
 pub struct Opts {
-    /// The relay, as `https://host`.
+    /// The relays a walk may use, each as `https://host`. A walk times
+    /// them when it starts and uses the one that answers soonest.
+    pub urls: Vec<String>,
+    /// The relay this walk is using.
     pub url: String,
     pub user_agent: String,
     /// Least time between two requests.
@@ -74,12 +81,12 @@ async fn fetch(
 struct Tally {
     pages: u64,
     repos: u64,
-    marked: u64,
     web_found: u64,
 }
 
-/// Mark the identities a page lists and queue its unseen `did:web`
-/// accounts, in one transaction with the walk's position.
+/// Record the identities a page lists and queue its unseen `did:web`
+/// accounts, in one transaction with the walk's position. After the last
+/// page the walk moves on to merging.
 async fn apply(
     client: &mut Client,
     opts: &Opts,
@@ -98,13 +105,12 @@ async fn apply(
         .map(|d| encoding::did_bytes(d))
         .collect();
     let tx = client.transaction().await?;
-    tally.marked += tx
-        .execute(
-            "INSERT INTO listed (did) SELECT unnest($1::bytea[]) ON CONFLICT DO NOTHING",
-            &[&keys],
-        )
-        .await
-        .context("marking listed")?;
+    tx.execute(
+        "INSERT INTO walk_seen (did) SELECT unnest($1::bytea[])",
+        &[&keys],
+    )
+    .await
+    .context("recording a page of the listing")?;
     if !web.is_empty() {
         let known: HashSet<Vec<u8>> = tx
             .query("SELECT did FROM accounts WHERE did = ANY($1)", &[&web])
@@ -137,8 +143,8 @@ async fn apply(
         }
         None => {
             tx.execute(
-                "INSERT INTO sync_state (source, origin, cursor, phase, tip_at) VALUES ($1, $2, 0, 'done', now()) \
-                 ON CONFLICT (source) DO UPDATE SET origin = EXCLUDED.origin, phase = 'done', position = NULL, tip_at = now()",
+                "INSERT INTO sync_state (source, origin, cursor, phase) VALUES ($1, $2, 0, 'merging') \
+                 ON CONFLICT (source) DO UPDATE SET origin = EXCLUDED.origin, phase = 'merging', position = NULL",
                 &[&SOURCE, &opts.url],
             )
             .await
@@ -159,7 +165,10 @@ async fn walk(
     mut position: Option<String>,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<bool> {
-    tracing::info!(resuming = position.is_some(), "relay walk starting");
+    if position.is_none() {
+        client.batch_execute("TRUNCATE walk_seen").await?;
+    }
+    tracing::info!(resuming = position.is_some(), relay = %opts.url, "relay walk starting");
     let started = Instant::now();
     let mut tally = Tally::default();
     let mut backoff = BACKOFF_START;
@@ -193,7 +202,6 @@ async fn walk(
             tracing::info!(
                 pages = tally.pages,
                 repos = tally.repos,
-                marked = tally.marked,
                 did_web_queued = tally.web_found,
                 elapsed_s = started.elapsed().as_secs(),
                 "relay walk"
@@ -210,7 +218,73 @@ async fn walk(
     }
 }
 
+/// The relay that answers a page of the listing soonest from here. Two
+/// relays that serve the same listing can differ by more than a factor of
+/// two, which over twenty thousand pages is hours.
+async fn nearest(http: &reqwest::Client, opts: &Opts) -> String {
+    let mut best: Option<(Duration, &String)> = None;
+    for url in &opts.urls {
+        let probe = Opts {
+            url: url.clone(),
+            ..opts.clone()
+        };
+        // The first request pays for the connection; the second is timed.
+        let _ = fetch(http, &probe, None).await;
+        let t0 = Instant::now();
+        match fetch(http, &probe, None).await {
+            Ok(_) => {
+                let took = t0.elapsed();
+                tracing::info!(relay = %url, ms = took.as_millis() as u64, "relay timed");
+                if best.is_none_or(|(b, _)| took < b) {
+                    best = Some((took, url));
+                }
+            }
+            Err(why) => tracing::warn!(relay = %url, "relay did not answer: {why}"),
+        }
+    }
+    // If none answered, the walk's own retries deal with it.
+    best.map(|(_, url)| url.clone())
+        .unwrap_or_else(|| opts.urls[0].clone())
+}
+
+/// Merge what the walk saw into `listed`, and finish the walk. Both sides
+/// are read in key order, so nothing is looked up a row at a time. Safe to
+/// run again if it was interrupted.
+async fn merge(client: &mut Client) -> Result<()> {
+    let started = Instant::now();
+    let tx = client.transaction().await?;
+    // A row-at-a-time plan here would be the scattered reads the walk
+    // exists to avoid.
+    tx.batch_execute("SET LOCAL enable_nestloop = off").await?;
+    let marked = tx
+        .execute(
+            "INSERT INTO listed (did) \
+             SELECT s.did FROM (SELECT DISTINCT did FROM walk_seen) s \
+             WHERE NOT EXISTS (SELECT 1 FROM listed l WHERE l.did = s.did) \
+             ORDER BY s.did",
+            &[],
+        )
+        .await
+        .context("merging the listing")?;
+    tx.batch_execute("TRUNCATE walk_seen").await?;
+    tx.execute(
+        "UPDATE sync_state SET phase = 'done', position = NULL, tip_at = now() WHERE source = $1",
+        &[&SOURCE],
+    )
+    .await?;
+    tx.commit().await?;
+    tracing::info!(
+        marked,
+        elapsed_s = started.elapsed().as_secs(),
+        "relay walk merged"
+    );
+    Ok(())
+}
+
 pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
+    if opts.urls.is_empty() {
+        bail!("no relay is configured for the walk");
+    }
     let http = reqwest::Client::builder()
         .user_agent(opts.user_agent.clone())
         .timeout(Duration::from_secs(60))
@@ -232,29 +306,52 @@ pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>
                 &[&SOURCE, &(opts.every.as_secs() as f64)],
             )
             .await?;
+        let mut merging = false;
+        // A walk under way stays with the relay it began on: a position
+        // means nothing to another relay.
+        let mut began_on: Option<String> = None;
         let start: Option<Option<String>> = match row {
             None => Some(None),
             Some(r) => {
                 let origin: String = r.get(0);
                 let phase: String = r.get(1);
-                if origin != opts.url {
-                    bail!(
-                        "the walk's position belongs to {origin}; refusing to run against {}",
-                        opts.url
-                    );
-                }
                 match phase.as_str() {
-                    "walking" => Some(r.get(2)),
+                    "walking" => {
+                        if !opts.urls.contains(&origin) {
+                            bail!(
+                                "the walk's position belongs to {origin}, which is not among the relays configured"
+                            );
+                        }
+                        began_on = Some(origin);
+                        Some(r.get(2))
+                    }
+                    "merging" => {
+                        merging = true;
+                        None
+                    }
                     "done" if !r.get::<_, bool>(3) => None,
                     // Finished long enough ago, or asked for.
                     _ => Some(None),
                 }
             }
         };
+        if merging {
+            merge(&mut client).await?;
+            continue;
+        }
         if let (true, Some(position)) = (plc_live, start) {
+            let url = match began_on.filter(|_| position.is_some()) {
+                Some(url) => url,
+                None => nearest(&http, &opts).await,
+            };
+            let opts = Opts {
+                url,
+                ..opts.clone()
+            };
             if !walk(&mut client, &http, &opts, position, &mut stop).await? {
                 break;
             }
+            merge(&mut client).await?;
             continue;
         }
         tokio::select! {

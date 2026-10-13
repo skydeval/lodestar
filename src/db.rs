@@ -110,6 +110,10 @@ DO $$ BEGIN
     END IF;
 END $$;
 DROP TABLE IF EXISTS walk_listed;
+-- What a relay walk in progress has seen. Appended to a page at a time
+-- and merged into `listed` when the listing ends. No key: nothing is
+-- looked up in it.
+CREATE TABLE IF NOT EXISTS walk_seen (did bytea NOT NULL);
 
 -- Work for the verification role that should not wait for a lap: a handle
 -- to check or a did:web document to fetch. One row per DID and kind of
