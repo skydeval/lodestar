@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::Notify;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,6 +26,9 @@ pub struct Limits {
     pub default: DomainLimit,
     /// Per registrable domain.
     pub overrides: HashMap<String, DomainLimit>,
+    /// Everything lodestar sends, a second and in flight. A domain with
+    /// limits of its own has its share of these set aside; every other
+    /// domain draws on what is left.
     pub global_rate: f64,
     pub global_in_flight: usize,
 }
@@ -163,7 +165,6 @@ struct State {
 struct Inner {
     limits: Limits,
     state: Mutex<State>,
-    freed: Notify,
 }
 
 #[derive(Clone)]
@@ -173,27 +174,35 @@ pub struct Limiter(Arc<Inner>);
 pub struct Permit {
     inner: Arc<Inner>,
     domain: String,
+    /// Whether it holds one of the slots the domains without limits of
+    /// their own share.
+    shared: bool,
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
         let mut s = self.inner.state.lock().expect("limiter lock");
-        s.global_in_flight = s.global_in_flight.saturating_sub(1);
+        if self.shared {
+            s.global_in_flight = s.global_in_flight.saturating_sub(1);
+        }
         if let Some(d) = s.domains.get_mut(&self.domain) {
             d.in_flight = d.in_flight.saturating_sub(1);
         }
-        drop(s);
-        self.inner.freed.notify_waiters();
     }
 }
 
 enum Try {
     Go,
-    /// Try again after this long, or when a slot frees.
+    /// Try again after this long.
     Wait(Duration),
     /// Only a slot freeing will help.
     Full,
 }
+
+/// How often a check waiting for a slot looks again. Thousands can be
+/// waiting at once, and waking them all whenever any slot frees costs far
+/// more than each looking for itself.
+const LOOK_AGAIN: Duration = Duration::from_millis(50);
 
 /// Domains not used for this long are forgotten.
 const IDLE: Duration = Duration::from_secs(600);
@@ -201,7 +210,12 @@ const IDLE: Duration = Duration::from_secs(600);
 impl Limiter {
     pub fn new(limits: Limits) -> Self {
         let now = Instant::now();
-        let global = Bucket::new(limits.global_rate, now);
+        // What the domains with limits of their own leave of the whole.
+        let own_rate: f64 = limits.overrides.values().map(|l| l.rate).sum();
+        let global = Bucket::new(
+            (limits.global_rate - own_rate).max(limits.default.rate),
+            now,
+        );
         Limiter(Arc::new(Inner {
             limits,
             state: Mutex::new(State {
@@ -210,8 +224,21 @@ impl Limiter {
                 global_in_flight: 0,
                 swept: now,
             }),
-            freed: Notify::new(),
         }))
+    }
+
+    /// The slots in flight the domains without limits of their own share.
+    fn shared_in_flight(&self) -> usize {
+        let own: usize = self.0.limits.overrides.values().map(|l| l.in_flight).sum();
+        self.0
+            .limits
+            .global_in_flight
+            .saturating_sub(own)
+            .max(self.0.limits.default.in_flight)
+    }
+
+    fn has_own_limits(&self, domain: &str) -> bool {
+        self.0.limits.overrides.contains_key(domain)
     }
 
     fn limit(&self, domain: &str) -> DomainLimit {
@@ -235,9 +262,15 @@ impl Limiter {
             });
             s.swept = now;
         }
+        // A domain with limits of its own is held to those alone.
+        let shared = !self.has_own_limits(domain);
         s.global.fill(now);
-        let global_wait = s.global.wait();
-        let global_full = s.global_in_flight >= self.0.limits.global_in_flight;
+        let global_wait = if shared {
+            s.global.wait()
+        } else {
+            Duration::ZERO
+        };
+        let global_full = shared && s.global_in_flight >= self.shared_in_flight();
         let d = s
             .domains
             .entry(domain.to_owned())
@@ -265,8 +298,10 @@ impl Limiter {
         }
         d.bucket.tokens -= 1.0;
         d.in_flight += 1;
-        s.global.tokens -= 1.0;
-        s.global_in_flight += 1;
+        if shared {
+            s.global.tokens -= 1.0;
+            s.global_in_flight += 1;
+        }
         Try::Go
     }
 
@@ -274,6 +309,7 @@ impl Limiter {
         Permit {
             inner: self.0.clone(),
             domain: domain.to_owned(),
+            shared: !self.has_own_limits(domain),
         }
     }
 
@@ -285,20 +321,10 @@ impl Limiter {
     /// Wait for a slot for a check of `domain`.
     pub async fn acquire(&self, domain: &str) -> Permit {
         loop {
-            // Register for wake-ups before looking, so a slot freed in
-            // between is not missed.
-            let freed = self.0.freed.notified();
-            tokio::pin!(freed);
-            freed.as_mut().enable();
             match self.attempt(domain) {
                 Try::Go => return self.permit(domain),
-                Try::Wait(d) => {
-                    tokio::select! {
-                        _ = tokio::time::sleep(d) => {}
-                        _ = &mut freed => {}
-                    }
-                }
-                Try::Full => freed.await,
+                Try::Wait(d) => tokio::time::sleep(d).await,
+                Try::Full => tokio::time::sleep(LOOK_AGAIN).await,
             }
         }
     }

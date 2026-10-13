@@ -203,6 +203,14 @@ Work towards 0.1.0.
   rows of a domain that has no room or is paused. A read is also
   kept to half a second, so that consumers' requests and changed
   claims do not wait on it.
+- Every domain drew on the one global rate and in-flight limit, so
+  a long queue of other domains' handles took nearly all of it from
+  a large domain's sweep. A domain with limits of its own is now
+  held to those alone, and the other domains share what the global
+  limits leave.
+- Each check that finished woke every waiting check. With thousands
+  waiting, that took all of the host's CPU. A waiting check now
+  looks again for itself.
 
 - Recon PLC backfill compared an operation's `prev` with the previous
   operation's CID as text. The directory accepts a `prev` written in
