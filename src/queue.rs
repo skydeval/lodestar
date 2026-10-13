@@ -55,7 +55,7 @@ pub async fn push(db: &impl GenericClient, reason: i16, items: &[Item<'_>]) -> R
 pub async fn depth(db: &impl GenericClient, reason: i16, cap: i64) -> Result<i64> {
     let row = db
         .query_one(
-            "SELECT count(*) FROM (SELECT 1 FROM verify_due WHERE reason = $1 LIMIT $2) x",
+            "SELECT count(*) FROM (SELECT 1 FROM verify_due WHERE kind IN (0, 1) AND reason = $1 LIMIT $2) x",
             &[&reason, &cap],
         )
         .await

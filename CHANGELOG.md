@@ -182,6 +182,12 @@ Work towards 0.1.0.
   before then.
 - An empty rate or control setting in the environment stopped the
   verification role at start-up. It is now treated as unset.
+- With a long queue the verification role stopped keeping up with it.
+  Each read of the queue sorted all of it and could read all of
+  `accounts`, so changed claims waited hours behind a lap's overflow
+  and the role's status went unreported. The queue is now read along
+  an index, only the rows read are looked up in `accounts`, and it is
+  read at most four times a second.
 
 - Recon PLC backfill compared an operation's `prev` with the previous
   operation's CID as text. The directory accepts a `prev` written in

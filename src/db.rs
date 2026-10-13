@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS verify_due (
     did    bytea NOT NULL,
     PRIMARY KEY (did, kind)
 );
+-- The order the verification role takes work in.
+CREATE INDEX IF NOT EXISTS verify_due_order ON verify_due (kind, reason, due_at, did);
 
 -- A check that is failing or awaiting confirmation and has not settled.
 -- Healthy handles have no row. kind: 0 the handle, 1 the did:web document.

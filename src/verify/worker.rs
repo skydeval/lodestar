@@ -586,6 +586,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut request_look = tokio::time::interval(REQUEST_LOOK);
     let mut report = tokio::time::interval(Duration::from_secs(60));
     report.tick().await;
+    let mut last_pass: Option<std::time::Instant> = None;
 
     loop {
         while let Some(joined) = running.tasks.try_join_next() {
@@ -597,27 +598,40 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         // items it cannot start, so a full domain at the head of the queue
         // does not hide the rest.
         let mut started = 0usize;
-        let mut after: Option<(i16, f64, Vec<u8>)> = None;
+        let pass_began = std::time::Instant::now();
+        let mut read = 0usize;
+        let mut after: Option<(i16, String, Vec<u8>)> = None;
         // While verification is paused nothing is started, and no handle
         // is checked before the claims have been counted.
-        let pages = if shared.gate.is_open() && shared.claims_ready.load(Ordering::Acquire) {
-            PAGES
-        } else {
-            0
-        };
+        // Nor more often than this: with a long queue, checks finish all
+        // the time, and a pass for each would read the queue without rest.
+        let rested = last_pass.is_none_or(|t| t.elapsed() >= IDLE);
+        let pages =
+            if rested && shared.gate.is_open() && shared.claims_ready.load(Ordering::Acquire) {
+                last_pass = Some(pass_began);
+                PAGES
+            } else {
+                0
+            };
         for _ in 0..pages {
-            let (reason, due, did) = after.clone().unwrap_or((0, 0.0, Vec::new()));
+            let (reason, due, did) = after.clone().unwrap_or((0, "epoch".to_owned(), Vec::new()));
+            // The page is taken from the queue alone, along its index, and
+            // only its rows are looked up in `accounts`. Joined first, a
+            // long queue has every page read all of `accounts`.
             let rows = control
                 .query(
-                    "SELECT v.did, v.reason, extract(epoch FROM v.due_at)::float8, a.handle_claim, a.status \
-                     FROM verify_due v LEFT JOIN accounts a ON a.did = v.did \
-                     WHERE v.kind = $1 AND v.due_at <= now() AND (v.reason, extract(epoch FROM v.due_at)::float8, v.did) > ($3, $4, $5) \
-                     ORDER BY v.reason, extract(epoch FROM v.due_at)::float8, v.did LIMIT $2",
+                    "SELECT q.did, q.reason, q.due_at::text, a.handle_claim, a.status \
+                     FROM (SELECT v.did, v.reason, v.due_at FROM verify_due v \
+                           WHERE v.kind = $1 AND v.due_at <= now() AND (v.reason, v.due_at, v.did) > ($3, $4::text::timestamptz, $5) \
+                           ORDER BY v.reason, v.due_at, v.did LIMIT $2) q \
+                     LEFT JOIN accounts a ON a.did = q.did \
+                     ORDER BY q.reason, q.due_at, q.did",
                     &[&KIND_HANDLE, &PAGE, &reason, &due, &did],
                 )
                 .await
                 .context("reading the queue")?;
             let full_page = rows.len() as i64 == PAGE;
+            read += rows.len();
             let mut dead: Vec<Vec<u8>> = Vec::new();
             for r in &rows {
                 let did: Vec<u8> = r.get(0);
@@ -691,6 +705,15 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             if !full_page {
                 break;
             }
+        }
+        if pages != 0 {
+            tracing::debug!(
+                read,
+                started,
+                ms = pass_began.elapsed().as_millis() as u64,
+                in_flight = running.keys.len(),
+                "queue pass"
+            );
         }
 
         tokio::select! {
