@@ -189,6 +189,16 @@ Work towards 0.1.0.
   answered a page in a quarter of the time the other took, which was
   most of a four-hour walk.
 
+- A domain's check rate adapts to how it answers. It starts at one a
+  second, climbs a step after each second of quick, conclusive
+  answers, halves on a slow answer, a failure or a request to wait,
+  and then holds for a minute. It climbs no higher than 20 a second
+  (5 in the hobbyist profile). A domain with limits of its own keeps
+  them. `/ops/health` lists the domains that have climbed.
+- The share of the global limits set aside for a domain with limits
+  of its own is set aside only while that domain is in use, so when
+  its sweep is done the other domains share the whole.
+
 ### Fixed
 
 - The verification role counted handle claims once, when it started.

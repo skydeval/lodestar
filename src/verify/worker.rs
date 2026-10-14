@@ -126,11 +126,31 @@ impl Shared {
             };
             self.checker.check(claim).await
         };
+        self.limiter.answered(domain, how_it_answered(&found));
         if let Some(wait) = found.retry_after {
             self.limiter
                 .hold(domain, wait.min(self.rules.retry_after_ceiling));
         }
         (self.gate.epoch() == epoch).then_some(found)
+    }
+}
+
+/// An answer slower than this counts as strain on the domain.
+const SLOW: Duration = Duration::from_secs(2);
+
+/// How a check went, for the domain's adapting rate. A refusal says
+/// nothing about how much the domain can take; a wait asked for, a
+/// failure or a slow answer is strain.
+fn how_it_answered(found: &super::check::Check) -> limiter::Answer {
+    use super::check::Outcome;
+    if found.retry_after.is_some() {
+        return limiter::Answer::Strained;
+    }
+    match found.outcome {
+        Outcome::Inconclusive("refused") => limiter::Answer::Neither,
+        Outcome::Inconclusive(_) => limiter::Answer::Strained,
+        Outcome::Did(_) | Outcome::Nothing if found.took > SLOW => limiter::Answer::Strained,
+        Outcome::Did(_) | Outcome::Nothing => limiter::Answer::Clean,
     }
 }
 
@@ -851,6 +871,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     "domains_paused_failing": failing_domains,
                     "domains_paused_resolving_to_nothing": nothing_domains,
                     "domains_at_their_in_flight_cap": shared.limiter.full_domains(),
+                    "domains_climbed": shared.limiter.climbed(20),
                 });
                 control
                     .execute(

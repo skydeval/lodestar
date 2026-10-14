@@ -31,6 +31,10 @@ pub struct Limits {
     /// domain draws on what is left.
     pub global_rate: f64,
     pub global_in_flight: usize,
+    /// The highest rate a domain without limits of its own climbs to. It
+    /// starts at the default rate and climbs while the domain answers
+    /// quickly and cleanly.
+    pub ceiling: f64,
 }
 
 impl Default for Limits {
@@ -61,6 +65,7 @@ impl Limits {
                 overrides,
                 global_rate: 40.0,
                 global_in_flight: 24,
+                ceiling: 5.0,
             }
         } else {
             overrides.insert(
@@ -78,6 +83,7 @@ impl Limits {
                 overrides,
                 global_rate: 400.0,
                 global_in_flight: 160,
+                ceiling: 20.0,
             }
         }
     }
@@ -153,13 +159,51 @@ struct Domain {
     /// The host asked lodestar to wait until then.
     hold_until: Option<Instant>,
     used: Instant,
+    /// For a domain whose rate adapts: clean answers since the rate last
+    /// changed, and when it may next climb.
+    clean: u32,
+    calm_until: Instant,
 }
+
+impl Domain {
+    fn new(limit: DomainLimit, now: Instant) -> Self {
+        Domain {
+            bucket: Bucket::new(limit.rate, now),
+            cap: limit.in_flight,
+            in_flight: 0,
+            hold_until: None,
+            used: now,
+            clean: 0,
+            calm_until: now,
+        }
+    }
+}
+
+/// How a check went, as the limiter sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// The domain answered quickly and conclusively.
+    Clean,
+    /// The domain struggled: it asked to wait, failed, or was slow.
+    Strained,
+    /// It says nothing about the domain, such as a refusal.
+    Neither,
+}
+
+/// After a strained answer a domain's rate does not climb for this long.
+const CALM: Duration = Duration::from_secs(60);
+/// A domain with limits of its own keeps its share of the global limits
+/// only while it has been used this recently. Once its sweep is done, the
+/// other domains may have the whole.
+const RESERVED_WHILE_USED: Duration = Duration::from_secs(30);
 
 struct State {
     domains: HashMap<String, Domain>,
     global: Bucket,
     global_in_flight: usize,
     swept: Instant,
+    /// When each domain with limits of its own was last used.
+    own_used: HashMap<String, Instant>,
 }
 
 struct Inner {
@@ -210,12 +254,7 @@ const IDLE: Duration = Duration::from_secs(600);
 impl Limiter {
     pub fn new(limits: Limits) -> Self {
         let now = Instant::now();
-        // What the domains with limits of their own leave of the whole.
-        let own_rate: f64 = limits.overrides.values().map(|l| l.rate).sum();
-        let global = Bucket::new(
-            (limits.global_rate - own_rate).max(limits.default.rate),
-            now,
-        );
+        let global = Bucket::new(limits.global_rate, now);
         Limiter(Arc::new(Inner {
             limits,
             state: Mutex::new(State {
@@ -223,18 +262,94 @@ impl Limiter {
                 global,
                 global_in_flight: 0,
                 swept: now,
+                own_used: HashMap::new(),
             }),
         }))
     }
 
-    /// The slots in flight the domains without limits of their own share.
-    fn shared_in_flight(&self) -> usize {
-        let own: usize = self.0.limits.overrides.values().map(|l| l.in_flight).sum();
-        self.0
-            .limits
-            .global_in_flight
-            .saturating_sub(own)
-            .max(self.0.limits.default.in_flight)
+    /// What the domains with limits of their own, and in use, leave of
+    /// the global limits for every other domain: a rate and a number in
+    /// flight.
+    fn shared_share(&self, s: &State, now: Instant) -> (f64, usize) {
+        let limits = &self.0.limits;
+        let (mut rate, mut in_flight) = (0.0, 0usize);
+        for (domain, l) in &limits.overrides {
+            if s.own_used
+                .get(domain)
+                .is_some_and(|t| now.duration_since(*t) < RESERVED_WHILE_USED)
+            {
+                rate += l.rate;
+                in_flight += l.in_flight;
+            }
+        }
+        (
+            (limits.global_rate - rate).max(limits.default.rate),
+            limits
+                .global_in_flight
+                .saturating_sub(in_flight)
+                .max(limits.default.in_flight),
+        )
+    }
+
+    /// How a check of `domain` went. A domain without limits of its own
+    /// climbs a step after a second's worth of clean answers, and halves
+    /// its rate on a strained one, then holds for a minute.
+    pub fn answered(&self, domain: &str, answer: Answer) {
+        if self.has_own_limits(domain) || answer == Answer::Neither {
+            return;
+        }
+        let now = Instant::now();
+        let limits = &self.0.limits;
+        let mut s = self.0.state.lock().expect("limiter lock");
+        let Some(d) = s.domains.get_mut(domain) else {
+            return;
+        };
+        d.bucket.fill(now);
+        let rate = d.bucket.rate;
+        match answer {
+            Answer::Strained => {
+                d.bucket.rate = (rate / 2.0).max(limits.default.rate);
+                d.clean = 0;
+                d.calm_until = now + CALM;
+            }
+            Answer::Clean => {
+                d.clean += 1;
+                if f64::from(d.clean) >= rate && now >= d.calm_until {
+                    d.bucket.rate =
+                        (rate * 1.25 + 0.25).min(limits.ceiling.max(limits.default.rate));
+                    d.clean = 0;
+                }
+            }
+            Answer::Neither => {}
+        }
+        // Enough slots for a second of checks at the new rate.
+        d.cap = limits.default.in_flight.max(d.bucket.rate.ceil() as usize);
+    }
+
+    /// The domains whose rate has climbed above the default, fastest
+    /// first, at most `n` of them, for health.
+    pub fn climbed(&self, n: usize) -> Vec<(String, f64)> {
+        let default = self.0.limits.default.rate;
+        let s = self.0.state.lock().expect("limiter lock");
+        let mut up: Vec<(String, f64)> = s
+            .domains
+            .iter()
+            .filter(|(name, d)| d.bucket.rate > default && !self.has_own_limits(name))
+            .map(|(name, d)| (name.clone(), (d.bucket.rate * 10.0).round() / 10.0))
+            .collect();
+        up.sort_by(|a, b| b.1.total_cmp(&a.1));
+        up.truncate(n);
+        up
+    }
+
+    /// The rate a domain is at now.
+    #[cfg(test)]
+    fn rate_of(&self, domain: &str) -> f64 {
+        let s = self.0.state.lock().expect("limiter lock");
+        s.domains
+            .get(domain)
+            .map(|d| d.bucket.rate)
+            .unwrap_or_else(|| self.limit(domain).rate)
     }
 
     fn has_own_limits(&self, domain: &str) -> bool {
@@ -262,25 +377,25 @@ impl Limiter {
             });
             s.swept = now;
         }
-        // A domain with limits of its own is held to those alone.
+        // A domain with limits of its own is held to those alone, and the
+        // others share what is left.
         let shared = !self.has_own_limits(domain);
+        if !shared {
+            s.own_used.insert(domain.to_owned(), now);
+        }
+        let (share_rate, share_in_flight) = self.shared_share(&s, now);
         s.global.fill(now);
+        s.global.rate = share_rate;
         let global_wait = if shared {
             s.global.wait()
         } else {
             Duration::ZERO
         };
-        let global_full = shared && s.global_in_flight >= self.shared_in_flight();
+        let global_full = shared && s.global_in_flight >= share_in_flight;
         let d = s
             .domains
             .entry(domain.to_owned())
-            .or_insert_with(|| Domain {
-                bucket: Bucket::new(limit.rate, now),
-                cap: limit.in_flight,
-                in_flight: 0,
-                hold_until: None,
-                used: now,
-            });
+            .or_insert_with(|| Domain::new(limit, now));
         d.used = now;
         d.bucket.fill(now);
         if let Some(until) = d.hold_until {
@@ -338,13 +453,7 @@ impl Limiter {
         let d = s
             .domains
             .entry(domain.to_owned())
-            .or_insert_with(|| Domain {
-                bucket: Bucket::new(limit.rate, now),
-                cap: limit.in_flight,
-                in_flight: 0,
-                hold_until: None,
-                used: now,
-            });
+            .or_insert_with(|| Domain::new(limit, now));
         let until = now + wait;
         if d.hold_until.is_none_or(|h| h < until) {
             d.hold_until = Some(until);
@@ -382,7 +491,62 @@ mod tests {
             overrides: HashMap::new(),
             global_rate: 1000.0,
             global_in_flight: 1000,
+            ceiling: 20.0,
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_domain_climbs_on_clean_answers_and_halves_on_strain() {
+        let l = Limiter::new(limits(1.0, 8));
+        drop(l.acquire("example.com").await);
+        for _ in 0..200 {
+            l.answered("example.com", Answer::Clean);
+        }
+        assert_eq!(l.rate_of("example.com"), 20.0);
+        l.answered("example.com", Answer::Strained);
+        assert_eq!(l.rate_of("example.com"), 10.0);
+        // No climbing for a minute after strain.
+        for _ in 0..100 {
+            l.answered("example.com", Answer::Clean);
+        }
+        assert_eq!(l.rate_of("example.com"), 10.0);
+        tokio::time::sleep(CALM).await;
+        for _ in 0..10 {
+            l.answered("example.com", Answer::Clean);
+        }
+        assert!(l.rate_of("example.com") > 10.0);
+        // It never drops below the default.
+        for _ in 0..10 {
+            l.answered("example.com", Answer::Strained);
+        }
+        assert_eq!(l.rate_of("example.com"), 1.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reserved_share_is_released_when_its_domain_is_idle() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "big.example".to_owned(),
+            DomainLimit {
+                rate: 90.0,
+                in_flight: 9,
+            },
+        );
+        let l = Limiter::new(Limits {
+            overrides,
+            global_rate: 100.0,
+            global_in_flight: 10,
+            ..limits(100.0, 100)
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        // While the big domain is in use, the rest share one slot.
+        let big = l.acquire("big.example").await;
+        let _a = l.acquire("one.com").await;
+        assert!(l.try_acquire("two.com").is_none());
+        // Once it has been idle a while, they share the whole.
+        drop(big);
+        tokio::time::sleep(RESERVED_WHILE_USED + Duration::from_secs(1)).await;
+        assert!(l.try_acquire("two.com").is_some());
     }
 
     #[test]
