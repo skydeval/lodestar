@@ -199,6 +199,13 @@ Work towards 0.1.0.
   of its own is set aside only while that domain is in use, so when
   its sweep is done the other domains share the whole.
 
+- When a domain has failed for the whole of its pause's hold, its
+  queued handles are settled as unreachable at once, and the next
+  lap checks them again. Before, a domain that failed most of the
+  time re-entered its pause within minutes of each release, and its
+  queued handles waited months, a few checked a day. A verified
+  handle keeps its own grace period.
+
 ### Fixed
 
 - The verification role counted handle claims once, when it started.

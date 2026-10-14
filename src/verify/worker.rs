@@ -187,8 +187,40 @@ pub(super) async fn save_changes(client: &Client, changes: &[Change]) -> Result<
                         &[&source, &phase, &(c.since as f64 / 1000.0)],
                     )
                     .await?;
+                if c.pause == 2 && c.state == State::Released {
+                    settle_failing_domain(client, &c.domain).await?;
+                }
             }
         }
+    }
+    Ok(())
+}
+
+/// A domain has failed for a whole hold without one conclusive answer.
+/// Its queued handles are settled as unreachable now, not left waiting:
+/// a domain that keeps failing re-enters its pause within minutes and
+/// would check them a few at a time for months. A verified handle is
+/// left to its own grace period. The next lap checks them all again.
+async fn settle_failing_domain(client: &Client, domain: &str) -> Result<()> {
+    let settled = client
+        .execute(
+            "WITH settled AS ( \
+                 UPDATE accounts a SET handle_status = $2, handle_checked_at = now() \
+                 FROM verify_due v \
+                 WHERE v.kind = 0 AND v.domain = $1 AND a.did = v.did AND a.handle_status <> $3 \
+                 RETURNING a.did), \
+             cleared AS (DELETE FROM check_failures f USING settled s WHERE f.did = s.did AND f.kind = 0) \
+             DELETE FROM verify_due v USING settled s WHERE v.did = s.did AND v.kind = 0",
+            &[&domain, &db::HANDLE_UNREACHABLE, &db::HANDLE_VERIFIED],
+        )
+        .await
+        .context("settling a failing domain's handles")?;
+    if settled > 0 {
+        tracing::warn!(
+            domain,
+            settled,
+            "handles of a failing domain settled as unreachable"
+        );
     }
     Ok(())
 }
