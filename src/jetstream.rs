@@ -558,6 +558,78 @@ mod tests {
         assert!(!url("wss://example.org", None).contains("cursor"));
     }
 
+    #[tokio::test]
+    async fn positions_are_kept_per_instance_and_cover_each_other() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let opts = Opts {
+            urls: vec![],
+            user_agent: String::new(),
+            quiet: Duration::from_secs(60),
+            event_cap: 100,
+        };
+        let east = Sub {
+            opts: &opts,
+            url: "wss://east.example",
+            source: source_of("wss://east.example"),
+        };
+        let west = Sub {
+            opts: &opts,
+            url: "wss://west.example",
+            source: source_of("wss://west.example"),
+        };
+        // A first start with nothing stored begins at the tip.
+        assert_eq!(
+            starting_position(&client, &east.source).await.unwrap(),
+            None
+        );
+        begin_run(&client, &east, None).await.unwrap();
+        let events = [Event {
+            did: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            kind: Kind::Identity,
+        }];
+        let now_us = chrono::Utc::now().timestamp_micros();
+        apply(&mut client, &east, &events, now_us).await.unwrap();
+        assert_eq!(
+            starting_position(&client, &east.source).await.unwrap(),
+            Some(now_us)
+        );
+        // Another instance starts where the newest position is.
+        assert_eq!(
+            starting_position(&client, &west.source).await.unwrap(),
+            Some(now_us)
+        );
+        begin_run(&client, &west, Some(now_us - 3_600_000_000))
+            .await
+            .unwrap();
+        confirm_tip(&client, &west.source).await.unwrap();
+        // West has run since an hour ago: it covers a loss after that,
+        // not one before.
+        assert!(
+            covered_by_another(&client, &east.source, Some(now_us - 60_000_000))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !covered_by_another(&client, &east.source, Some(now_us - 7_200_000_000))
+                .await
+                .unwrap()
+        );
+        // East has run only since this test began, so it covers a loss by
+        // west from then on, not one from a minute before.
+        assert!(
+            covered_by_another(&client, &west.source, Some(now_us))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !covered_by_another(&client, &west.source, Some(now_us - 60_000_000))
+                .await
+                .unwrap()
+        );
+    }
+
     #[test]
     fn notices_and_noise() {
         let info = r#"{"$type":"message","payload":{"$type":"network.bsky.jetstream.subscribeEvents#info","message":"…","name":"FutureCursor"}}"#;

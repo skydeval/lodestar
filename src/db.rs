@@ -292,3 +292,57 @@ pub async fn init(client: &Client) -> Result<()> {
         .context("creating schema")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_schema_can_be_created_twice() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        init(&client).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_old_listed_column_is_moved_into_its_table() {
+        let Some(client) = crate::testdb::empty().await else {
+            return;
+        };
+        client
+            .batch_execute(
+                "CREATE TABLE accounts (created_at timestamptz NOT NULL, handle_checked_at timestamptz, pds_id integer, \
+                 method smallint NOT NULL, status smallint NOT NULL, handle_status smallint NOT NULL, \
+                 listed boolean NOT NULL DEFAULT false, did bytea PRIMARY KEY, signing_key bytea, handle_claim text); \
+                 INSERT INTO accounts (created_at, method, status, handle_status, listed, did) VALUES \
+                 (now(), 0, 0, 5, true, '\\x01'), (now(), 0, 0, 5, false, '\\x02');",
+            )
+            .await
+            .unwrap();
+        init(&client).await.unwrap();
+        let listed: Vec<Vec<u8>> = client
+            .query("SELECT did FROM listed", &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        assert_eq!(listed, vec![vec![1u8]]);
+        let column: i64 = client
+            .query_one(
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'accounts' AND column_name = 'listed'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(column, 0);
+        let readable: bool = client
+            .query_one("SELECT bool_or(listed) FROM accounts_readable", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(readable);
+    }
+}

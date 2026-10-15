@@ -56,6 +56,9 @@ const PAGE: i64 = 2000;
 const PAGES: usize = 10;
 /// How long the worker waits when there is nothing it can start.
 const IDLE: Duration = Duration::from_millis(250);
+/// The longest rest between passes over the queue. Changed claims and
+/// consumers' requests wait at most this long for a pass.
+const MAX_REST: Duration = Duration::from_secs(3);
 /// The longest a pass over the queue goes on reading further pages.
 const PASS_BUDGET: Duration = Duration::from_millis(500);
 /// How long the queue's rows for a domain are passed over once it is found
@@ -134,6 +137,16 @@ impl Shared {
         (self.gate.epoch() == epoch).then_some(found)
     }
 }
+
+/// A page of the queue in the order work is taken, after a position and
+/// past the domains with no room, with what is needed from `accounts`.
+const QUEUE_PAGE: &str = "SELECT q.did, q.reason, q.due_at::text, a.handle_claim, a.status, q.domain \
+     FROM (SELECT v.did, v.reason, v.due_at, v.domain FROM verify_due v \
+           WHERE v.kind = $1 AND v.due_at <= now() AND (v.reason, v.due_at, v.did) > ($3, $4::text::timestamptz, $5) \
+             AND (v.domain IS NULL OR v.domain <> ALL($6)) \
+           ORDER BY v.reason, v.due_at, v.did LIMIT $2) q \
+     LEFT JOIN accounts a ON a.did = q.did \
+     ORDER BY q.reason, q.due_at, q.did";
 
 /// An answer slower than this counts as strain on the domain.
 const SLOW: Duration = Duration::from_secs(2);
@@ -650,6 +663,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     report.tick().await;
     let mut last_pass: Option<std::time::Instant> = None;
     let mut last_started = 1usize;
+    let mut last_took = Duration::ZERO;
     // Domains whose queued rows are not worth reading for now, and until
     // when: one with no room for another waiting check, or one that is
     // paused. Without this a domain with a great many rows queued fills
@@ -674,7 +688,12 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         // Nor more often than this: with a long queue, checks finish all
         // the time, and a pass for each would read the queue without rest.
         // A pass that started nothing is followed by a longer rest.
-        let rest = if last_started == 0 { IDLE * 4 } else { IDLE };
+        // After a slow pass, rest a few times as long: the read stays a
+        // small share of the database's time however long the queue is.
+        let mut rest = (last_took * 3).clamp(IDLE, MAX_REST);
+        if last_started == 0 {
+            rest = rest.max(IDLE * 4);
+        }
         let rested = last_pass.is_none_or(|t| t.elapsed() >= rest);
         let pages =
             if rested && shared.gate.is_open() && shared.claims_ready.load(Ordering::Acquire) {
@@ -692,13 +711,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             // long queue has every page read all of `accounts`.
             let rows = control
                 .query(
-                    "SELECT q.did, q.reason, q.due_at::text, a.handle_claim, a.status, q.domain \
-                     FROM (SELECT v.did, v.reason, v.due_at, v.domain FROM verify_due v \
-                           WHERE v.kind = $1 AND v.due_at <= now() AND (v.reason, v.due_at, v.did) > ($3, $4::text::timestamptz, $5) \
-                             AND (v.domain IS NULL OR v.domain <> ALL($6)) \
-                           ORDER BY v.reason, v.due_at, v.did LIMIT $2) q \
-                     LEFT JOIN accounts a ON a.did = q.did \
-                     ORDER BY q.reason, q.due_at, q.did",
+                    QUEUE_PAGE,
                     &[&KIND_HANDLE, &PAGE, &reason, &due, &did, &skip],
                 )
                 .await
@@ -803,6 +816,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         }
         if pages != 0 {
             last_started = started;
+            last_took = pass_began.elapsed();
             tracing::debug!(
                 read,
                 started,
@@ -945,4 +959,167 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     })
     .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding;
+
+    async fn account(client: &Client, did: &str, claim: &str, status: i16) {
+        client
+            .execute(
+                "INSERT INTO accounts (created_at, method, status, handle_status, did, handle_claim) VALUES (now(), 0, 0, $1, $2, $3)",
+                &[&status, &encoding::did_bytes(did), &claim],
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_queue_is_read_in_order_past_full_domains() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        account(
+            &client,
+            "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+            "a.full.example",
+            db::HANDLE_PENDING,
+        )
+        .await;
+        account(
+            &client,
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "b.open.example",
+            db::HANDLE_PENDING,
+        )
+        .await;
+        let a = encoding::did_bytes("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa");
+        let b = encoding::did_bytes("did:plc:bbbbbbbbbbbbbbbbbbbbbbbb");
+        let items = [
+            queue::Item {
+                did: &a,
+                kind: KIND_HANDLE,
+                listed: false,
+                domain: Some("full.example"),
+            },
+            queue::Item {
+                did: &b,
+                kind: KIND_HANDLE,
+                listed: false,
+                domain: Some("open.example"),
+            },
+        ];
+        queue::push(&client, queue::REASON_LAP_OVERFLOW, &items)
+            .await
+            .unwrap();
+        let skip: Vec<&str> = vec!["full.example"];
+        let rows = client
+            .query(
+                QUEUE_PAGE,
+                &[
+                    &KIND_HANDLE,
+                    &PAGE,
+                    &0i16,
+                    &"epoch",
+                    &Vec::<u8>::new(),
+                    &skip,
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get::<_, Option<String>>(3).as_deref(),
+            Some("b.open.example")
+        );
+        // A changed claim drops the domain the row had.
+        queue::push(
+            &client,
+            queue::REASON_CLAIM,
+            &[queue::Item {
+                did: &a,
+                kind: KIND_HANDLE,
+                listed: false,
+                domain: None,
+            }],
+        )
+        .await
+        .unwrap();
+        let rows = client
+            .query(
+                QUEUE_PAGE,
+                &[
+                    &KIND_HANDLE,
+                    &PAGE,
+                    &0i16,
+                    &"epoch",
+                    &Vec::<u8>::new(),
+                    &skip,
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<_, i16>(1), queue::REASON_CLAIM);
+    }
+
+    #[tokio::test]
+    async fn a_failing_domain_is_settled_except_verified_handles() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        account(
+            &client,
+            "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+            "a.dead.example",
+            db::HANDLE_PENDING,
+        )
+        .await;
+        account(
+            &client,
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "b.dead.example",
+            db::HANDLE_VERIFIED,
+        )
+        .await;
+        let a = encoding::did_bytes("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa");
+        let b = encoding::did_bytes("did:plc:bbbbbbbbbbbbbbbbbbbbbbbb");
+        let items = [
+            queue::Item {
+                did: &a,
+                kind: KIND_HANDLE,
+                listed: false,
+                domain: Some("dead.example"),
+            },
+            queue::Item {
+                did: &b,
+                kind: KIND_HANDLE,
+                listed: false,
+                domain: Some("dead.example"),
+            },
+        ];
+        queue::push(&client, queue::REASON_LAP_OVERFLOW, &items)
+            .await
+            .unwrap();
+        settle_failing_domain(&client, "dead.example")
+            .await
+            .unwrap();
+        let rows = client
+            .query(
+                "SELECT handle_claim, handle_status FROM accounts ORDER BY handle_claim",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get::<_, i16>(1), db::HANDLE_UNREACHABLE);
+        assert_eq!(rows[1].get::<_, i16>(1), db::HANDLE_VERIFIED);
+        let left: i64 = client
+            .query_one("SELECT count(*) FROM verify_due", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(left, 1);
+    }
 }

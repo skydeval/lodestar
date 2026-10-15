@@ -130,6 +130,11 @@ Work towards 0.1.0.
 - A CI workflow: formatting, clippy, tests and a dependency check on
   every push.
 - Licensed under MIT or Apache-2.0.
+- Tests that run against Postgres: schema creation and the move of
+  the old listed column, applying PLC operations, the queue's read
+  order, bulk settling, both passes of a lap, a relay walk and its
+  merge, and Jetstream positions. They run when
+  `LODESTAR_TEST_DATABASE_URL` is set, as CI sets it.
 - Views `accounts_readable` and `identity_history_readable`, which
   show DIDs, signing keys and endpoints as text.
 - The API role, `lodestar api`: account lookup, history, batch
@@ -224,6 +229,10 @@ Work towards 0.1.0.
   them, so a sequence number could mean nothing after a reconnect:
   on 13 October one did, and cost a four-hour walk. A time means the
   same on every instance.
+
+- After a slow read of the queue the worker rests three times as
+  long before the next, up to three seconds, so a long queue takes a
+  small share of the database's time.
 
 ### Fixed
 

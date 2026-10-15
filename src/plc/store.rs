@@ -397,3 +397,71 @@ pub async fn prune_recent(client: &Client, newest_created_at: &str, window_ms: i
         .context("pruning the recovery window")?;
     Ok(n)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plc::op::parse_line;
+
+    fn line(seq: i64, cid: &str, operation: &str) -> String {
+        format!(
+            r#"{{"type":"sequenced_op","did":"did:plc:ewvi7nxzyoun6zhxrhs64oiz","cid":"{cid}","seq":{seq},"createdAt":"2023-04-12T04:53:57.057Z","operation":{operation}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn a_page_writes_state_history_and_claims() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let create = parse_line(&line(1, "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgz7soitae",
+            r#"{"type":"create","prev":null,"handle":"old.example.com","service":"https://pds.example.com","signingKey":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF","recoveryKey":"did:key:zX"}"#)).unwrap();
+        let update = parse_line(&line(2, "bafyreihp3mxbq5ekbpkgnr2y5ebvzqbffwzwb4wmb4lgcbsviujf2x2ns4",
+            r#"{"type":"plc_operation","prev":"bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgz7soitae","alsoKnownAs":["at://new.example.com"],"services":{"atproto_pds":{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"verificationMethods":{"atproto":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF"}}"#)).unwrap();
+        let mut pds = PdsCache::default();
+        apply_page(
+            &mut client,
+            &mut pds,
+            "https://plc.example",
+            &[create],
+            72 * 3_600_000,
+            true,
+        )
+        .await
+        .unwrap();
+        apply_page(
+            &mut client,
+            &mut pds,
+            "https://plc.example",
+            &[update],
+            72 * 3_600_000,
+            true,
+        )
+        .await
+        .unwrap();
+        let claim: String = client
+            .query_one("SELECT handle_claim FROM accounts", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(claim, "new.example.com");
+        let history: i64 = client
+            .query_one("SELECT count(*) FROM identity_history", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(history, 2, "the original state and the change");
+        let queued: i64 = client
+            .query_one("SELECT count(*) FROM verify_due WHERE reason = 10", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(queued, 1);
+        let cursor: i64 = client
+            .query_one("SELECT cursor FROM sync_state WHERE source = 'plc'", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(cursor, 2);
+    }
+}

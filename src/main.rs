@@ -8,6 +8,8 @@ mod ingest;
 mod jetstream;
 mod plc;
 mod queue;
+#[cfg(test)]
+mod testdb;
 mod verify;
 mod walk;
 

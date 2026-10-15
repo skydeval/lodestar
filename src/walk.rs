@@ -362,3 +362,75 @@ pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>
     tracing::info!("relay walk stopped");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_walk_records_pages_then_merges_them() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let opts = Opts {
+            urls: vec!["https://relay.example".into()],
+            url: "https://relay.example".into(),
+            user_agent: String::new(),
+            min_interval: Duration::ZERO,
+            every: Duration::from_secs(1),
+            max_pages: 0,
+        };
+        let mut tally = Tally::default();
+        let page1 = vec![
+            "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            "did:web:example.com".to_owned(),
+        ];
+        let page2 = vec![
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            "not a did".to_owned(),
+        ];
+        apply(&mut client, &opts, &page1, Some("next"), &mut tally)
+            .await
+            .unwrap();
+        let phase: String = client
+            .query_one("SELECT phase FROM sync_state WHERE source = $1", &[&SOURCE])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(phase, "walking");
+        apply(&mut client, &opts, &page2, None, &mut tally)
+            .await
+            .unwrap();
+        assert_eq!(tally.web_found, 1);
+        merge(&mut client).await.unwrap();
+        let listed: i64 = client
+            .query_one("SELECT count(*) FROM listed", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(listed, 3);
+        let seen: i64 = client
+            .query_one("SELECT count(*) FROM walk_seen", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(seen, 0);
+        let phase: String = client
+            .query_one("SELECT phase FROM sync_state WHERE source = $1", &[&SOURCE])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(phase, "done");
+        // A second walk's merge adds only what is new.
+        apply(&mut client, &opts, &page1, None, &mut tally)
+            .await
+            .unwrap();
+        merge(&mut client).await.unwrap();
+        let listed: i64 = client
+            .query_one("SELECT count(*) FROM listed", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(listed, 3);
+    }
+}

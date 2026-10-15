@@ -86,63 +86,6 @@ impl Lap<'_> {
         Ok(())
     }
 
-    /// What is due in one stretch of the table.
-    async fn due_in_blocks(
-        &self,
-        from: i64,
-        to: i64,
-        lap_started: f64,
-    ) -> Result<Vec<tokio_postgres::Row>> {
-        self.client
-            .query(
-                "SELECT a.did, a.handle_claim FROM accounts a \
-                 WHERE a.ctid >= $1::text::tid AND a.ctid < $2::text::tid \
-                   AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $4 \
-                   AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($3)) \
-                   AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
-                &[&format!("({from},0)"), &format!("({to},0)"), &lap_started, &db::HANDLE_NONE],
-            )
-            .await
-            .context("reading a stretch of accounts")
-    }
-
-    /// The next page of `listed` after `after`, and what of it is due. The
-    /// page's last key is returned whether or not anything on it is due;
-    /// None once `listed` is read to the end.
-    async fn due_in_listed(
-        &self,
-        after: &[u8],
-        lap_started: f64,
-    ) -> Result<(Vec<tokio_postgres::Row>, Option<Vec<u8>>)> {
-        let keys: Vec<Vec<u8>> = self
-            .client
-            .query(
-                "SELECT did FROM listed WHERE did > $1 ORDER BY did LIMIT $2",
-                &[&after, &LISTED_PAGE],
-            )
-            .await
-            .context("reading listed")?
-            .iter()
-            .map(|r| r.get(0))
-            .collect();
-        let Some(last) = keys.last().cloned() else {
-            return Ok((Vec::new(), None));
-        };
-        let rows = self
-            .client
-            .query(
-                "SELECT a.did, a.handle_claim FROM accounts a \
-                 WHERE a.did = ANY($1) \
-                   AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $3 \
-                   AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($2)) \
-                   AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
-                &[&keys, &lap_started, &db::HANDLE_NONE],
-            )
-            .await
-            .context("reading the listed accounts")?;
-        Ok((rows, Some(last)))
-    }
-
     /// Check the due accounts read. False if asked to stop.
     async fn check(
         &mut self,
@@ -268,7 +211,7 @@ impl Lap<'_> {
                 _ = stop.changed() => return Ok(false),
                 _ = self.shared.gate.wait_open() => {}
             }
-            let (rows, last) = self.due_in_listed(&after, lap_started).await?;
+            let (rows, last) = due_in_listed(&self.client, &after, lap_started).await?;
             let Some(last) = last else {
                 return Ok(true);
             };
@@ -313,7 +256,7 @@ impl Lap<'_> {
                 _ = self.shared.gate.wait_open() => {}
             }
             let to = (block + self.opts.chunk_blocks).min(blocks);
-            let rows = self.due_in_blocks(block, to, lap_started).await?;
+            let rows = due_in_blocks(&self.client, block, to, lap_started).await?;
             if !self.check(rows, stop).await? {
                 return Ok(false);
             }
@@ -324,6 +267,66 @@ impl Lap<'_> {
             }
         }
     }
+}
+
+/// What is due in one stretch of the table.
+async fn due_in_blocks(
+    client: &Client,
+    from: i64,
+    to: i64,
+    lap_started: f64,
+) -> Result<Vec<tokio_postgres::Row>> {
+    client
+        .query(
+            "SELECT a.did, a.handle_claim FROM accounts a \
+             WHERE a.ctid >= $1::text::tid AND a.ctid < $2::text::tid \
+               AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $4 \
+               AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($3)) \
+               AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
+            &[
+                &format!("({from},0)"),
+                &format!("({to},0)"),
+                &lap_started,
+                &db::HANDLE_NONE,
+            ],
+        )
+        .await
+        .context("reading a stretch of accounts")
+}
+
+/// The next page of `listed` after `after`, and what of it is due. The
+/// page's last key is returned whether or not anything on it is due;
+/// None once `listed` is read to the end.
+async fn due_in_listed(
+    client: &Client,
+    after: &[u8],
+    lap_started: f64,
+) -> Result<(Vec<tokio_postgres::Row>, Option<Vec<u8>>)> {
+    let keys: Vec<Vec<u8>> = client
+        .query(
+            "SELECT did FROM listed WHERE did > $1 ORDER BY did LIMIT $2",
+            &[&after, &LISTED_PAGE],
+        )
+        .await
+        .context("reading listed")?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let Some(last) = keys.last().cloned() else {
+        return Ok((Vec::new(), None));
+    };
+    let rows = client
+        .query(
+            "SELECT a.did, a.handle_claim FROM accounts a \
+             WHERE a.did = ANY($1) \
+               AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $3 \
+               AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($2)) \
+               AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
+            &[&keys, &lap_started, &db::HANDLE_NONE],
+        )
+        .await
+        .context("reading the listed accounts")?;
+    Ok((rows, Some(last)))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -441,6 +444,36 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn both_passes_find_what_is_due() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let a = crate::encoding::did_bytes("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa");
+        let b = crate::encoding::did_bytes("did:plc:bbbbbbbbbbbbbbbbbbbbbbbb");
+        for did in [&a, &b] {
+            client
+                .execute(
+                    "INSERT INTO accounts (created_at, method, status, handle_status, did, handle_claim) VALUES (now(), 0, 0, 4, $1, 'x.example.com')",
+                    &[did],
+                )
+                .await
+                .unwrap();
+        }
+        client
+            .execute("INSERT INTO listed (did) VALUES ($1)", &[&a])
+            .await
+            .unwrap();
+        let now = chrono::Utc::now().timestamp() as f64;
+        let (rows, last) = due_in_listed(&client, &[], now).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(last.as_deref(), Some(a.as_slice()));
+        let (rows, last) = due_in_listed(&client, &a, now).await.unwrap();
+        assert!(rows.is_empty() && last.is_none());
+        let rows = due_in_blocks(&client, 0, 1000, now).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
 
     #[test]
     fn a_position_reads_back() {
