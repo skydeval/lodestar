@@ -121,6 +121,8 @@ Work towards 0.1.0.
 - Config profiles for rates, `vps` and `hobbyist`, and per-domain
   rate overrides.
 - A README for operators.
+- `docs/measurements.md`: how long the first build of the index took
+  on the reference host, and what the first verification found.
 - A release workflow. A tag `v<version>` builds the x86-64 image,
   pushes it to `ghcr.io/skydeval/lodestar` under that version, and
   creates the release from the version's section of this file. The

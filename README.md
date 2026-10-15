@@ -20,14 +20,14 @@ network.
 ## What it needs
 
 - Postgres 16.
-- About 35 GB of disk for the whole network today, on an SSD. The
-  reference host is a VPS with a 75 GB disk, 8 GB of memory and
-  4 vCPUs.
+- About 30 GB of disk for the whole network today, on an SSD, and
+  room for it to grow. The reference host is a VPS with a 75 GB disk,
+  8 GB of memory and 4 vCPUs.
 - Outbound network access for two of its three roles.
 
-The first sync of the PLC directory takes most of a day. After it,
-verifying every handle on the network takes about two days at the
-default rates.
+On the reference host in October 2026, the first sync of the PLC
+directory took 9 hours, and verifying every handle on the network
+after it took 43 hours. See [docs/measurements.md](docs/measurements.md).
 
 ## Roles
 
