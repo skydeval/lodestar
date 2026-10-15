@@ -208,6 +208,11 @@ Work towards 0.1.0.
   queued handles waited months, a few checked a day. A verified
   handle keeps its own grace period.
 
+- A lap's first pass reads `listed` in key order and looks up only
+  those accounts; the second reads `accounts` in storage order with no
+  lookup a row. Before, the first pass read all of `accounts` and
+  looked every row up in `listed`.
+
 ### Fixed
 
 - The verification role counted handle claims once, when it started.

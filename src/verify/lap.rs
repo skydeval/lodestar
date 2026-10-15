@@ -1,6 +1,7 @@
-//! The background sweep. A lap reads `accounts` in storage order, which
-//! is a sequential read, and checks every handle that is due: first the
-//! identities known to have a repo, then everything still due.
+//! The background sweep. A lap checks every handle that is due: first the
+//! identities known to have a repo, read from `listed` in key order and
+//! looked up in `accounts`, then everything still due, read from
+//! `accounts` in storage order, which is a sequential read.
 //!
 //! One lap covers every domain but the large ones. It never waits for a
 //! domain that is out of budget; what it cannot check at once goes to the
@@ -37,6 +38,8 @@ pub struct Opts {
 
 /// How often a waiting lap looks at whether it is time.
 const LOOK: Duration = Duration::from_secs(30);
+/// Identities read from `listed` at a time in the first pass.
+const LISTED_PAGE: i64 = 2000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
@@ -83,29 +86,69 @@ impl Lap<'_> {
         Ok(())
     }
 
-    /// Check what is due in one stretch of the table. False if asked to stop.
-    async fn chunk(
-        &mut self,
-        pass: Pass,
+    /// What is due in one stretch of the table.
+    async fn due_in_blocks(
+        &self,
         from: i64,
         to: i64,
         lap_started: f64,
-        stop: &mut watch::Receiver<bool>,
-    ) -> Result<bool> {
+    ) -> Result<Vec<tokio_postgres::Row>> {
+        self.client
+            .query(
+                "SELECT a.did, a.handle_claim FROM accounts a \
+                 WHERE a.ctid >= $1::text::tid AND a.ctid < $2::text::tid \
+                   AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $4 \
+                   AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($3)) \
+                   AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
+                &[&format!("({from},0)"), &format!("({to},0)"), &lap_started, &db::HANDLE_NONE],
+            )
+            .await
+            .context("reading a stretch of accounts")
+    }
+
+    /// The next page of `listed` after `after`, and what of it is due. The
+    /// page's last key is returned whether or not anything on it is due;
+    /// None once `listed` is read to the end.
+    async fn due_in_listed(
+        &self,
+        after: &[u8],
+        lap_started: f64,
+    ) -> Result<(Vec<tokio_postgres::Row>, Option<Vec<u8>>)> {
+        let keys: Vec<Vec<u8>> = self
+            .client
+            .query(
+                "SELECT did FROM listed WHERE did > $1 ORDER BY did LIMIT $2",
+                &[&after, &LISTED_PAGE],
+            )
+            .await
+            .context("reading listed")?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        let Some(last) = keys.last().cloned() else {
+            return Ok((Vec::new(), None));
+        };
         let rows = self
             .client
             .query(
                 "SELECT a.did, a.handle_claim FROM accounts a \
-                 WHERE a.ctid >= $1::text::tid AND a.ctid < $2::text::tid \
-                   AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $5 \
-                   AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($3)) \
-                   AND ($4 OR (SELECT true FROM listed l WHERE l.did = a.did)) \
+                 WHERE a.did = ANY($1) \
+                   AND a.status = 0 AND a.handle_claim IS NOT NULL AND a.handle_status <> $3 \
+                   AND (a.handle_checked_at IS NULL OR a.handle_checked_at < to_timestamp($2)) \
                    AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0)",
-                &[&format!("({from},0)"), &format!("({to},0)"), &lap_started, &(pass == Pass::All), &db::HANDLE_NONE],
+                &[&keys, &lap_started, &db::HANDLE_NONE],
             )
             .await
-            .context("reading a stretch of accounts")?;
+            .context("reading the listed accounts")?;
+        Ok((rows, Some(last)))
+    }
 
+    /// Check the due accounts read. False if asked to stop.
+    async fn check(
+        &mut self,
+        rows: Vec<tokio_postgres::Row>,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<bool> {
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
         let mut overflow: Vec<(Vec<u8>, String)> = Vec::new();
         for r in rows {
@@ -212,10 +255,44 @@ impl Lap<'_> {
         Ok(true)
     }
 
-    /// One pass over the table from `block`. False if asked to stop.
+    /// The first pass: `listed` in key order, from after `after`. False
+    /// if asked to stop.
+    async fn listed_pass(
+        &mut self,
+        mut after: Vec<u8>,
+        lap_started: f64,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<bool> {
+        loop {
+            tokio::select! {
+                _ = stop.changed() => return Ok(false),
+                _ = self.shared.gate.wait_open() => {}
+            }
+            let (rows, last) = self.due_in_listed(&after, lap_started).await?;
+            let Some(last) = last else {
+                return Ok(true);
+            };
+            if !self.check(rows, stop).await? {
+                return Ok(false);
+            }
+            after = last;
+            self.client
+                .execute(
+                    "UPDATE sync_state SET phase = 'listed', position = $2 WHERE source = $1",
+                    &[&self.source, &hex(&after)],
+                )
+                .await
+                .context("saving the lap's position")?;
+            if *stop.borrow() {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// The second pass: the whole table in storage order, from `block`.
+    /// False if asked to stop.
     async fn pass(
         &mut self,
-        pass: Pass,
         mut block: i64,
         lap_started: f64,
         stop: &mut watch::Receiver<bool>,
@@ -236,16 +313,34 @@ impl Lap<'_> {
                 _ = self.shared.gate.wait_open() => {}
             }
             let to = (block + self.opts.chunk_blocks).min(blocks);
-            if !self.chunk(pass, block, to, lap_started, stop).await? {
+            let rows = self.due_in_blocks(block, to, lap_started).await?;
+            if !self.check(rows, stop).await? {
                 return Ok(false);
             }
             block = to;
-            self.save(pass.name(), block).await?;
+            self.save(Pass::All.name(), block).await?;
             if *stop.borrow() {
                 return Ok(false);
             }
         }
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Bytes from `hex`. Anything that is not hex reads as empty: the pass
+/// starts again from the beginning, which only repeats work.
+fn unhex(text: &str) -> Vec<u8> {
+    if !text.len().is_multiple_of(2) {
+        return Vec::new();
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .unwrap_or_default()
 }
 
 fn self_ready(lap: &Lap<'_>) -> bool {
@@ -276,7 +371,7 @@ pub(super) async fn run(
         let row = lap
             .client
             .query_one(
-                "SELECT phase, cursor, extract(epoch FROM lap_started_at)::float8, \
+                "SELECT phase, cursor, extract(epoch FROM lap_started_at)::float8, position, \
                         COALESCE(lap_started_at <= now() - make_interval(secs => $2::float8), true), \
                         EXISTS (SELECT 1 FROM sync_state WHERE source = 'plc' AND phase = 'live'), \
                         EXISTS (SELECT 1 FROM sync_state WHERE source = 'relay-walk' AND tip_at IS NOT NULL) \
@@ -287,12 +382,16 @@ pub(super) async fn run(
         let phase: String = row.get(0);
         let block: i64 = row.get(1);
         let started: Option<f64> = row.get(2);
-        let time_for_a_new_lap: bool = row.get(3);
+        let after = row
+            .get::<_, Option<String>>(3)
+            .map(|p| unhex(&p))
+            .unwrap_or_default();
+        let time_for_a_new_lap: bool = row.get(4);
         // Handle checks wait for the PLC source to reach the tip, and the
         // sweep's order depends on the marks the first walk sets.
         // And no handle is checked before the claims have been counted,
         // which is what finds the shared handles.
-        let ready: bool = row.get::<_, bool>(4) && row.get::<_, bool>(5) && self_ready(&lap);
+        let ready: bool = row.get::<_, bool>(5) && row.get::<_, bool>(6) && self_ready(&lap);
 
         let resume = match (phase.as_str(), started) {
             ("listed", Some(s)) => Some((Pass::Listed, block, s)),
@@ -301,7 +400,7 @@ pub(super) async fn run(
                 let s: f64 = lap
                     .client
                     .query_one(
-                        "UPDATE sync_state SET lap_started_at = now(), phase = 'listed', cursor = 0 WHERE source = $1 \
+                        "UPDATE sync_state SET lap_started_at = now(), phase = 'listed', cursor = 0, position = NULL WHERE source = $1 \
                          RETURNING extract(epoch FROM lap_started_at)::float8",
                         &[&source],
                     )
@@ -317,16 +416,14 @@ pub(super) async fn run(
         if let Some((first, block, lap_started)) = resume {
             let t = std::time::Instant::now();
             if first == Pass::Listed {
-                if !lap
-                    .pass(Pass::Listed, block, lap_started, &mut stop)
-                    .await?
-                {
+                let after = if phase == "listed" { after } else { Vec::new() };
+                if !lap.listed_pass(after, lap_started, &mut stop).await? {
                     break;
                 }
                 lap.save(Pass::All.name(), 0).await?;
             }
             let from = if first == Pass::All { block } else { 0 };
-            if !lap.pass(Pass::All, from, lap_started, &mut stop).await? {
+            if !lap.pass(from, lap_started, &mut stop).await? {
                 break;
             }
             lap.save("idle", 0).await?;
@@ -339,4 +436,18 @@ pub(super) async fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_position_reads_back() {
+        let did = vec![0u8, 1, 0xab, 0xff, 0x10];
+        assert_eq!(unhex(&hex(&did)), did);
+        assert_eq!(unhex(""), Vec::<u8>::new());
+        assert_eq!(unhex("zz"), Vec::<u8>::new());
+        assert_eq!(unhex("abc"), Vec::<u8>::new());
+    }
 }
