@@ -599,6 +599,11 @@ async fn get_handle(
                 return Err(Miss(code, word, None));
             }
             let (src, live) = source(&app).await?;
+            // Until the first sync reaches the tip no handle is checked,
+            // so there is nothing to wait for.
+            if src.pointer("/plc/phase").and_then(Value::as_str) != Some("live") {
+                return Err(Miss(StatusCode::SERVICE_UNAVAILABLE, "syncing", Some(src)));
+            }
             let (code, word) = match app.ask(requests::ASK_HANDLE, &handle).await? {
                 Some((outcome, Some(did))) if outcome == requests::FOUND => {
                     return Ok(Json(json!({

@@ -239,6 +239,17 @@ Work towards 0.1.0.
 
 ### Fixed
 
+- A domain that answered 401 or 403 kept its rate. A refusal now
+  slows a domain's rate like any other strain.
+- A domain let go by its pause's hold while still giving no conclusive
+  answer was checked again at its full rate, which for a domain with a
+  rate of its own could be hundreds a second into a refusal. It is now
+  held to the default rate until it answers conclusively, and stays so
+  across a restart.
+- A handle lookup during the first sync waited five seconds and
+  answered `unavailable`. It answers `syncing` at once.
+- Rates of their own that add up to the global rate or more are
+  warned about at start-up.
 - rustls updated to 0.23.46 for RUSTSEC-2026-0346, -0347, -0348 and
   -0349.
 - The verification role counted handle claims once, when it started.

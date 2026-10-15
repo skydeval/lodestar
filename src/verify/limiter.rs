@@ -7,7 +7,7 @@
 //! slow one from taking every slot, and is also what backs lodestar away
 //! from a provider that has stopped answering.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -204,6 +204,8 @@ struct State {
     swept: Instant,
     /// When each domain with limits of its own was last used.
     own_used: HashMap<String, Instant>,
+    /// Domains held to the default rate until they answer conclusively.
+    slowed: HashSet<String>,
 }
 
 struct Inner {
@@ -263,6 +265,7 @@ impl Limiter {
                 global_in_flight: 0,
                 swept: now,
                 own_used: HashMap::new(),
+                slowed: HashSet::new(),
             }),
         }))
     }
@@ -296,6 +299,16 @@ impl Limiter {
     /// its rate on a strained one, then holds for a minute.
     pub fn answered(&self, domain: &str, answer: Answer) {
         if self.has_own_limits(domain) || answer == Answer::Neither {
+            return;
+        }
+        if self
+            .0
+            .state
+            .lock()
+            .expect("limiter lock")
+            .slowed
+            .contains(domain)
+        {
             return;
         }
         let now = Instant::now();
@@ -356,6 +369,39 @@ impl Limiter {
         self.0.limits.overrides.contains_key(domain)
     }
 
+    /// Hold a domain to the default rate and in-flight cap, whatever its
+    /// own limits or how far it has climbed, until `unslow`. For a domain
+    /// let go by its pause's hold while it still gives no conclusive
+    /// answer: it is checked, but slowly.
+    pub fn slow(&self, domain: &str) {
+        let now = Instant::now();
+        let default = self.0.limits.default;
+        let mut s = self.0.state.lock().expect("limiter lock");
+        s.slowed.insert(domain.to_owned());
+        let d = s
+            .domains
+            .entry(domain.to_owned())
+            .or_insert_with(|| Domain::new(default, now));
+        d.bucket.fill(now);
+        d.bucket.rate = default.rate;
+        d.bucket.tokens = d.bucket.tokens.min(d.bucket.depth());
+        d.cap = default.in_flight;
+        d.clean = 0;
+    }
+
+    /// The domain answered conclusively: its own limits apply again.
+    pub fn unslow(&self, domain: &str) {
+        let mut s = self.0.state.lock().expect("limiter lock");
+        if !s.slowed.remove(domain) {
+            return;
+        }
+        let limit = self.limit(domain);
+        if let Some(d) = s.domains.get_mut(domain) {
+            d.bucket.rate = limit.rate;
+            d.cap = limit.in_flight;
+        }
+    }
+
     fn limit(&self, domain: &str) -> DomainLimit {
         self.0
             .limits
@@ -379,7 +425,8 @@ impl Limiter {
         }
         // A domain with limits of its own is held to those alone, and the
         // others share what is left.
-        let shared = !self.has_own_limits(domain);
+        let slowed = s.slowed.contains(domain);
+        let shared = slowed || !self.has_own_limits(domain);
         if !shared {
             s.own_used.insert(domain.to_owned(), now);
         }
@@ -392,10 +439,9 @@ impl Limiter {
             Duration::ZERO
         };
         let global_full = shared && s.global_in_flight >= share_in_flight;
-        let d = s
-            .domains
-            .entry(domain.to_owned())
-            .or_insert_with(|| Domain::new(limit, now));
+        let d = s.domains.entry(domain.to_owned()).or_insert_with(|| {
+            Domain::new(if slowed { self.0.limits.default } else { limit }, now)
+        });
         d.used = now;
         d.bucket.fill(now);
         if let Some(until) = d.hold_until {
@@ -421,10 +467,17 @@ impl Limiter {
     }
 
     fn permit(&self, domain: &str) -> Permit {
+        let slowed = self
+            .0
+            .state
+            .lock()
+            .expect("limiter lock")
+            .slowed
+            .contains(domain);
         Permit {
             inner: self.0.clone(),
             domain: domain.to_owned(),
-            shared: !self.has_own_limits(domain),
+            shared: slowed || !self.has_own_limits(domain),
         }
     }
 
@@ -520,6 +573,32 @@ mod tests {
             l.answered("example.com", Answer::Strained);
         }
         assert_eq!(l.rate_of("example.com"), 1.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slowed_domain_keeps_the_default_rate_until_it_answers() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "big.example".to_owned(),
+            DomainLimit {
+                rate: 90.0,
+                in_flight: 9,
+            },
+        );
+        let l = Limiter::new(Limits {
+            overrides,
+            ..limits(1.0, 8)
+        });
+        drop(l.acquire("big.example").await);
+        l.slow("big.example");
+        assert_eq!(l.rate_of("big.example"), 1.0);
+        // It does not climb while slowed.
+        for _ in 0..100 {
+            l.answered("big.example", Answer::Clean);
+        }
+        assert_eq!(l.rate_of("big.example"), 1.0);
+        l.unslow("big.example");
+        assert_eq!(l.rate_of("big.example"), 90.0);
     }
 
     #[tokio::test(start_paused = true)]

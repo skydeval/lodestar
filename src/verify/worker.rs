@@ -130,6 +130,10 @@ impl Shared {
             self.checker.check(claim).await
         };
         self.limiter.answered(domain, how_it_answered(&found));
+        if !matches!(found.outcome, super::check::Outcome::Inconclusive(_)) {
+            // A conclusive answer ends the slow pace after a hold.
+            self.limiter.unslow(domain);
+        }
         if let Some(wait) = found.retry_after {
             self.limiter
                 .hold(domain, wait.min(self.rules.retry_after_ceiling));
@@ -151,16 +155,16 @@ const QUEUE_PAGE: &str = "SELECT q.did, q.reason, q.due_at::text, a.handle_claim
 /// An answer slower than this counts as strain on the domain.
 const SLOW: Duration = Duration::from_secs(2);
 
-/// How a check went, for the domain's adapting rate. A refusal says
-/// nothing about how much the domain can take; a wait asked for, a
-/// failure or a slow answer is strain.
+/// How a check went, for the domain's adapting rate. A wait asked for, a
+/// refusal, a failure or a slow answer is strain.
 fn how_it_answered(found: &super::check::Check) -> limiter::Answer {
     use super::check::Outcome;
     if found.retry_after.is_some() {
         return limiter::Answer::Strained;
     }
     match found.outcome {
-        Outcome::Inconclusive("refused") => limiter::Answer::Neither,
+        // A refusal says nothing about the handle, but it may be the
+        // host refusing lodestar's pace: it slows the rate like a failure.
         Outcome::Inconclusive(_) => limiter::Answer::Strained,
         Outcome::Did(_) | Outcome::Nothing if found.took > SLOW => limiter::Answer::Strained,
         Outcome::Did(_) | Outcome::Nothing => limiter::Answer::Clean,
@@ -573,6 +577,14 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         &super::check::Limits::default(),
     )?;
     let limits = opts.limits.clone();
+    let reserved: f64 = limits.overrides.values().map(|l| l.rate).sum();
+    if reserved >= limits.global_rate {
+        tracing::warn!(
+            reserved,
+            global = limits.global_rate,
+            "the domains with rates of their own take the whole global rate while they are swept; every other domain gets the default rate's worth"
+        );
+    }
     let caps: HashMap<String, usize> = limits
         .overrides
         .iter()
@@ -595,12 +607,16 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut control = db::connect(&opts.database_url).await?;
     // Domain pauses in force when lodestar stopped are still in force.
     let mut pauses = Pauses::default();
+    let mut released: Vec<String> = Vec::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for r in control.query("SELECT source, phase, (extract(epoch FROM tip_at) * 1000)::bigint FROM sync_state WHERE source LIKE 'pause_:%'", &[]).await? {
         let source: String = r.get(0);
         let state = if r.get::<_, String>(1) == "paused" { State::Paused } else { State::Released };
         if let Some((kind, domain)) = source.split_once(':') {
             pauses.restore(domain, if kind == "pause2" { 2 } else { 3 }, state, r.get::<_, Option<i64>>(2).unwrap_or(now_ms), now_ms);
+            if kind == "pause2" && state == State::Released {
+                released.push(domain.to_owned());
+            }
         }
     }
     let shared = Arc::new(Shared {
@@ -614,6 +630,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         counts: Counts::default(),
         claims_ready: AtomicBool::new(false),
     });
+    for domain in &released {
+        shared.limiter.slow(domain);
+    }
     // Which handles are shared has to be known before any handle is
     // checked. The count is taken once the PLC source is at the tip: a
     // count taken during the first sync would miss most of the directory,
@@ -838,6 +857,12 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 queue_documents(&control, web::Rules::default().refresh_secs).await?;
                 // Let the domain pauses' holds run out.
                 let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
+                // A domain let go by its hold has given no conclusive
+                // answer for a day: it is checked at the slowest pace,
+                // whatever its rate, until it gives one.
+                for c in changes.iter().filter(|c| c.pause == 2 && c.state == State::Released) {
+                    shared.limiter.slow(&c.domain);
+                }
                 save_changes(&control, &changes).await?;
             }
             _ = request_look.tick() => {
