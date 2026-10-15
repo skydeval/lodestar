@@ -213,6 +213,18 @@ Work towards 0.1.0.
   lookup a row. Before, the first pass read all of `accounts` and
   looked every row up in `listed`.
 
+- The Jetstream source subscribes to several instances at once,
+  Bluesky's east and west by default (`LODESTAR_JETSTREAM_URL` takes
+  a list), each with its own position. A position lost on one costs
+  nothing while another has been live throughout; only when none has
+  is a relay walk asked for.
+- A Jetstream position is the time of the last event, and a session
+  resumes 30 seconds before it. Instances number their events
+  independently, and one address can stand in front of several of
+  them, so a sequence number could mean nothing after a reconnect:
+  on 13 October one did, and cost a four-hour walk. A time means the
+  same on every instance.
+
 ### Fixed
 
 - The verification role counted handle claims once, when it started.

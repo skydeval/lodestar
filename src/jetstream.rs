@@ -1,6 +1,16 @@
 //! The Jetstream source: identity and account events. An event never
 //! writes identity state. It schedules work, and an active account event
 //! marks its identity as listed.
+//!
+//! Lodestar subscribes to several instances at once, each with its own
+//! position. The same event arriving from two of them schedules the same
+//! work twice, which the queue collapses, so nothing is deduplicated here.
+//!
+//! A position is the time of the last event, not the instance's sequence
+//! number. Instances number their events independently, and one address
+//! can stand in front of several instances, so a sequence number can mean
+//! nothing after a reconnect. A time means the same everywhere. A session
+//! resumes a little before the last event it saw.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -17,12 +27,21 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use crate::encoding;
 use crate::queue::{self, Item};
 
-pub const SOURCE: &str = "jetstream";
+/// Each instance's position is stored under this prefix and its host.
+const SOURCE_PREFIX: &str = "jetstream:";
+/// Where a single position was stored before there were several.
+const OLD_SOURCE: &str = "jetstream";
+/// A session resumes this long before the last event it saw: events from
+/// different instances, or delivered out of order, are not missed.
+const OVERLAP_US: i64 = 30_000_000;
+/// Another subscription counts as live if it has confirmed the tip within
+/// this long.
+const LIVE_WITHIN_SECS: f64 = 300.0;
 
 #[derive(Clone)]
 pub struct Opts {
-    /// The instance, as `wss://host`.
-    pub url: String,
+    /// The instances, each as `wss://host`.
+    pub urls: Vec<String>,
     pub user_agent: String,
     /// With no message for this long the connection is reopened.
     pub quiet: Duration,
@@ -46,12 +65,13 @@ enum Kind {
 #[derive(Debug, PartialEq, Eq)]
 enum Parsed {
     Event {
-        seq: i64,
+        /// The event's time in microseconds, which is its position.
+        time: Option<i64>,
         did: String,
         kind: Kind,
     },
-    /// The server's own notice. `FutureCursor` and `OutdatedCursor` mean
-    /// the cursor is lost.
+    /// The server's own notice. `OutdatedCursor` means the position is
+    /// older than the instance keeps.
     Info(String),
     Other,
 }
@@ -70,13 +90,15 @@ fn parse(text: &str) -> Parsed {
                 .to_owned(),
         ),
         name @ ("identity" | "account") => {
-            // The cursor is the envelope's seq, not the relay's inside.
-            let (Some(seq), Some(did)) = (
-                p.get("seq").and_then(Value::as_i64),
-                p.get("did").and_then(Value::as_str),
-            ) else {
+            let Some(did) = p.get("did").and_then(Value::as_str) else {
                 return Parsed::Other;
             };
+            // The envelope's time: when this instance saw the event.
+            let time = ["time", "witnessedAt"]
+                .iter()
+                .filter_map(|k| p.get(*k).and_then(Value::as_str))
+                .find_map(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.timestamp_micros());
             let kind = if name == "identity" {
                 Kind::Identity
             } else {
@@ -88,13 +110,19 @@ fn parse(text: &str) -> Parsed {
                 }
             };
             Parsed::Event {
-                seq,
+                time,
                 did: did.to_owned(),
                 kind,
             }
         }
         _ => Parsed::Other,
     }
+}
+
+/// Where an instance's position is stored.
+fn source_of(url: &str) -> String {
+    let host = url.split("://").nth(1).unwrap_or(url);
+    format!("{SOURCE_PREFIX}{}", host.trim_end_matches('/'))
 }
 
 /// The lookback floor named in a refusal of a cursor that is too old.
@@ -107,29 +135,35 @@ fn floor_from_refusal(body: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-fn url(opts: &Opts, cursor: Option<i64>) -> String {
-    let mut u = format!(
-        "{}/xrpc/network.bsky.jetstream.subscribeEvents?kinds=identity&kinds=account",
-        opts.url
-    );
-    if let Some(c) = cursor {
-        u.push_str(&format!("&cursor={c}"));
+/// The subscription address, resuming a little before `time`.
+fn url(base: &str, time: Option<i64>) -> String {
+    let mut u =
+        format!("{base}/xrpc/network.bsky.jetstream.subscribeEvents?kinds=identity&kinds=account");
+    if let Some(t) = time {
+        u.push_str(&format!("&cursor={}", t - OVERLAP_US));
     }
     u
 }
 
 struct Event {
-    seq: i64,
     did: String,
     kind: Kind,
 }
 
+/// One subscription: an instance and where its position is stored.
+struct Sub<'a> {
+    opts: &'a Opts,
+    url: &'a str,
+    source: String,
+}
+
 /// Turn a batch of events into scheduled work and listed marks, and commit
-/// it with the cursor.
-async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()> {
-    let Some(last) = events.last() else {
+/// it with the position.
+async fn apply(client: &mut Client, sub: &Sub<'_>, events: &[Event], time: i64) -> Result<()> {
+    if events.is_empty() {
         return Ok(());
-    };
+    }
+    let opts = sub.opts;
     // Per DID: was any event an identity event, and was any an active account event.
     let mut seen: HashMap<Vec<u8>, (bool, bool, bool)> = HashMap::new();
     for e in events {
@@ -202,24 +236,46 @@ async fn apply(client: &mut Client, opts: &Opts, events: &[Event]) -> Result<()>
         .context("marking listed")?;
     }
     tx.execute(
-        "INSERT INTO sync_state (source, origin, cursor, phase, tip_at) VALUES ($1, $2, $3, 'live', now()) \
-         ON CONFLICT (source) DO UPDATE SET origin = EXCLUDED.origin, cursor = EXCLUDED.cursor, phase = 'live', tip_at = now()",
-        &[&SOURCE, &opts.url, &last.seq],
+        "UPDATE sync_state SET origin = $2, cursor = GREATEST(cursor, $3), phase = 'live', tip_at = now() WHERE source = $1",
+        &[&sub.source, &sub.url, &time],
     )
     .await
-    .context("committing the cursor")?;
+    .context("committing the position")?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn confirm_tip(client: &Client) -> Result<()> {
+async fn confirm_tip(client: &Client, source: &str) -> Result<()> {
     client
         .execute(
             "UPDATE sync_state SET tip_at = now() WHERE source = $1",
-            &[&SOURCE],
+            &[&source],
         )
         .await?;
     Ok(())
+}
+
+/// Whether another subscription has delivered every event since `time`
+/// and is live now. `last_op_at` holds when a subscription's unbroken run
+/// of events began.
+async fn covered_by_another(client: &Client, source: &str, time: Option<i64>) -> Result<bool> {
+    let Some(time) = time else {
+        return Ok(false);
+    };
+    Ok(client
+        .query_opt(
+            "SELECT 1 FROM sync_state WHERE source LIKE $1 AND source <> $2 \
+               AND last_op_at <= to_timestamp($3::float8 / 1000000) \
+               AND tip_at > now() - make_interval(secs => $4)",
+            &[
+                &format!("{SOURCE_PREFIX}%"),
+                &source,
+                &(time as f64),
+                &LIVE_WITHIN_SECS,
+            ],
+        )
+        .await?
+        .is_some())
 }
 
 /// The cursor is lost: ask for a new walk, since events may have been missed.
@@ -235,19 +291,20 @@ async fn ask_for_walk(client: &Client) -> Result<()> {
 
 enum End {
     Stop,
-    /// Reconnect from the committed cursor.
+    /// Reconnect from the committed position.
     Again(String),
-    /// The cursor is lost. Find the floor and resume there.
+    /// The position is older than the instance keeps. Start at the tip.
     Lost(String),
 }
 
 async fn session(
     client: &mut Client,
-    opts: &Opts,
-    cursor: &mut Option<i64>,
+    sub: &Sub<'_>,
+    position: &mut Option<i64>,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<End> {
-    let mut request = url(opts, *cursor)
+    let opts = sub.opts;
+    let mut request = url(sub.url, *position)
         .as_str()
         .into_client_request()
         .context("building the subscription request")?;
@@ -271,23 +328,20 @@ async fn session(
                 .as_ref()
                 .map(|b| String::from_utf8_lossy(b).into_owned())
                 .unwrap_or_default();
-            if let Some(floor) = floor_from_refusal(&body) {
-                // Refused with the floor: resume from it.
-                *cursor = Some(floor);
-                ask_for_walk(client).await?;
-                return Ok(End::Again(format!(
-                    "cursor refused; resuming from the floor at {floor}"
-                )));
+            if floor_from_refusal(&body).is_some() {
+                // Only a sequence number is refused this way; a time that
+                // is too old is answered with a notice instead.
+                return Ok(End::Lost("CursorTooOld".into()));
             }
             return Ok(End::Again(format!("refused with {}", resp.status())));
         }
         Ok(Err(e)) => return Ok(End::Again(e.to_string())),
         Err(_) => return Ok(End::Again("timed out connecting".into())),
     };
-    tracing::info!(cursor = ?*cursor, "Jetstream subscription open");
+    tracing::info!(instance = %sub.url, position = ?*position, "Jetstream subscription open");
 
     let mut buf: Vec<Event> = Vec::new();
-    let mut seen = cursor.unwrap_or(0);
+    let mut seen = position.unwrap_or(0);
     let mut flush_at: Option<tokio::time::Instant> = None;
     let start = tokio::time::Instant::now();
     let mut ping = tokio::time::interval_at(start + PING, PING);
@@ -303,8 +357,8 @@ async fn session(
                 }
             }
             _ = async { tokio::time::sleep_until(flush_at.unwrap_or(start)).await }, if flush_at.is_some() => {
-                apply(client, opts, &buf).await?;
-                *cursor = Some(seen);
+                apply(client, sub, &buf, seen).await?;
+                *position = Some(seen);
                 buf.clear();
                 flush_at = None;
             }
@@ -316,8 +370,8 @@ async fn session(
                     Some(Ok(Message::Pong(_))) => {
                         // The connection is alive and there is nothing waiting: this is the tip.
                         quiet.as_mut().reset(tokio::time::Instant::now() + opts.quiet);
-                        if buf.is_empty() && cursor.is_some() {
-                            confirm_tip(client).await?;
+                        if buf.is_empty() && position.is_some() {
+                            confirm_tip(client, &sub.source).await?;
                         }
                         continue;
                     }
@@ -326,17 +380,21 @@ async fn session(
                 };
                 quiet.as_mut().reset(tokio::time::Instant::now() + opts.quiet);
                 match parse(text.as_str()) {
-                    Parsed::Info(name) if name == "FutureCursor" || name == "OutdatedCursor" => break End::Lost(name),
+                    Parsed::Info(name) if name == "OutdatedCursor" => break End::Lost(name),
+                    // A time ahead of the instance starts at its tip, which
+                    // is where the position already is.
                     Parsed::Info(_) | Parsed::Other => {}
-                    // The cursor is inclusive and delivery is at least once.
-                    Parsed::Event { seq, .. } if seq <= seen => {}
-                    Parsed::Event { seq, did, kind } => {
-                        seen = seq;
-                        buf.push(Event { seq, did, kind });
+                    Parsed::Event { time, did, kind } => {
+                        // Events resent by the overlap schedule work again;
+                        // the queue collapses it.
+                        if let Some(t) = time {
+                            seen = seen.max(t);
+                        }
+                        buf.push(Event { did, kind });
                         flush_at.get_or_insert(tokio::time::Instant::now() + BATCH_AGE);
                         if buf.len() >= BATCH {
-                            apply(client, opts, &buf).await?;
-                            *cursor = Some(seen);
+                            apply(client, sub, &buf, seen).await?;
+                            *position = Some(seen);
                             buf.clear();
                             flush_at = None;
                         }
@@ -345,40 +403,83 @@ async fn session(
             }
         }
     };
-    apply(client, opts, &buf).await?;
+    apply(client, sub, &buf, seen).await?;
     if !buf.is_empty() {
-        *cursor = Some(seen);
+        *position = Some(seen);
     }
     Ok(end)
 }
 
-pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
-    let row = client
+/// Where a subscription starts: its own stored position, or, the first
+/// time, the newest position any subscription has, including the single
+/// one of earlier versions. None starts at the tip.
+async fn starting_position(client: &Client, source: &str) -> Result<Option<i64>> {
+    if let Some(r) = client
         .query_opt(
-            "SELECT origin, cursor FROM sync_state WHERE source = $1",
-            &[&SOURCE],
+            "SELECT cursor FROM sync_state WHERE source = $1",
+            &[&source],
+        )
+        .await?
+    {
+        return Ok(Some(r.get(0)));
+    }
+    let newest: Option<i64> = client
+        .query_one(
+            "SELECT max(t) FROM ( \
+                 SELECT cursor AS t FROM sync_state WHERE source LIKE $1 \
+                 UNION ALL \
+                 SELECT (extract(epoch FROM tip_at) * 1000000)::bigint FROM sync_state WHERE source = $2) x",
+            &[&format!("{SOURCE_PREFIX}%"), &OLD_SOURCE],
+        )
+        .await?
+        .get(0);
+    Ok(newest)
+}
+
+/// Record that a subscription's unbroken run of events begins at `time`,
+/// or now.
+async fn begin_run(client: &Client, sub: &Sub<'_>, time: Option<i64>) -> Result<()> {
+    client
+        .execute(
+            "INSERT INTO sync_state (source, origin, cursor, phase, last_op_at) \
+             VALUES ($1, $2, COALESCE($3::int8, 0), 'starting', COALESCE(to_timestamp($3::int8::float8 / 1000000), now())) \
+             ON CONFLICT (source) DO UPDATE SET origin = EXCLUDED.origin, last_op_at = EXCLUDED.last_op_at",
+            &[&sub.source, &sub.url, &time],
         )
         .await?;
-    let mut cursor: Option<i64> = match row {
-        Some(r) if r.get::<_, String>(0) == opts.url => Some(r.get(1)),
-        Some(r) => {
-            // A seq means nothing on another instance.
-            tracing::warn!(was = %r.get::<_, String>(0), now = %opts.url, "the Jetstream instance changed; the old cursor is dropped");
-            ask_for_walk(&client).await?;
-            None
-        }
-        None => None,
+    Ok(())
+}
+
+/// One instance's subscription, until asked to stop.
+pub async fn run(
+    mut client: Client,
+    opts: Opts,
+    url: String,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
+    let sub = Sub {
+        opts: &opts,
+        url: &url,
+        source: source_of(&url),
     };
-    tracing::info!(cursor = ?cursor, "starting the Jetstream source");
+    let mut position = starting_position(&client, &sub.source).await?;
+    let fresh = client
+        .query_opt("SELECT 1 FROM sync_state WHERE source = $1", &[&sub.source])
+        .await?
+        .is_none();
+    if fresh {
+        begin_run(&client, &sub, position).await?;
+    }
+    tracing::info!(instance = %url, position = ?position, "starting a Jetstream subscription");
     let mut backoff = BACKOFF_START;
     loop {
-        let before = cursor;
-        let wait = match session(&mut client, &opts, &mut cursor, &mut stop).await? {
+        let before = position;
+        let wait = match session(&mut client, &sub, &mut position, &mut stop).await? {
             End::Stop => break,
             End::Again(why) => {
-                tracing::info!("Jetstream reconnecting: {why}");
+                tracing::info!(instance = %url, "Jetstream reconnecting: {why}");
                 // A session that made progress reconnects at once.
-                if cursor != before {
+                if position != before {
                     backoff = BACKOFF_START;
                     Duration::from_secs(1)
                 } else {
@@ -388,10 +489,17 @@ pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>
                 }
             }
             End::Lost(name) => {
-                // A seq of 1 is refused with the floor, which is where to resume.
-                tracing::warn!("the Jetstream cursor is lost ({name}); resuming from the floor");
-                ask_for_walk(&client).await?;
-                cursor = Some(1);
+                // Events since the position may have been missed. Another
+                // subscription that was live throughout has them; failing
+                // that, a relay walk catches up.
+                if covered_by_another(&client, &sub.source, position).await? {
+                    tracing::info!(instance = %url, "the Jetstream position is lost ({name}); another subscription covered the gap");
+                } else {
+                    tracing::warn!(instance = %url, "the Jetstream position is lost ({name}); asking for a relay walk");
+                    ask_for_walk(&client).await?;
+                }
+                position = None;
+                begin_run(&client, &sub, None).await?;
                 Duration::from_secs(1)
             }
         };
@@ -400,7 +508,7 @@ pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>
             _ = tokio::time::sleep(wait) => {}
         }
     }
-    tracing::info!(cursor = ?cursor, "Jetstream source stopped");
+    tracing::info!(instance = %url, position = ?position, "Jetstream subscription stopped");
     Ok(())
 }
 
@@ -414,7 +522,7 @@ mod tests {
         assert_eq!(
             parse(account),
             Parsed::Event {
-                seq: 26894478980,
+                time: Some(1_791_797_953_755_960),
                 did: "did:plc:by5ofb2yfxley72ma7iqwx5j".into(),
                 kind: Kind::Account { active: false }
             }
@@ -423,7 +531,7 @@ mod tests {
         assert_eq!(
             parse(identity),
             Parsed::Event {
-                seq: 77,
+                time: None,
                 did: "did:web:example.com".into(),
                 kind: Kind::Identity
             }
@@ -432,11 +540,22 @@ mod tests {
         assert_eq!(
             parse(active),
             Parsed::Event {
-                seq: 1,
+                time: None,
                 did: "did:plc:a".into(),
                 kind: Kind::Account { active: true }
             }
         );
+    }
+
+    #[test]
+    fn positions_are_times_and_resume_with_an_overlap() {
+        assert_eq!(
+            source_of("wss://jetstream.us-west.bsky.network"),
+            "jetstream:jetstream.us-west.bsky.network"
+        );
+        let u = url("wss://example.org", Some(1_000_000_000));
+        assert!(u.ends_with("&cursor=970000000"), "{u}");
+        assert!(!url("wss://example.org", None).contains("cursor"));
     }
 
     #[test]
@@ -449,7 +568,7 @@ mod tests {
             Parsed::Other
         );
         assert_eq!(
-            parse(r#"{"payload":{"$type":"x#identity","did":"did:plc:a"}}"#),
+            parse(r#"{"payload":{"$type":"x#identity"}}"#),
             Parsed::Other
         );
     }

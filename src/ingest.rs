@@ -63,9 +63,15 @@ pub async fn run(opts: Opts) -> Result<()> {
     let s = either(stop.clone(), halted.clone());
     tasks.spawn(async move { ("PLC source", plc::sync::run(client, opts.plc, s).await) });
     if let Some(o) = opts.jetstream {
-        let client = db::connect(&opts.database_url).await?;
-        let s = either(stop.clone(), halted.clone());
-        tasks.spawn(async move { ("Jetstream source", jetstream::run(client, o, s).await) });
+        // One subscription an instance, each on its own connection.
+        for url in o.urls.clone() {
+            let client = db::connect(&opts.database_url).await?;
+            let s = either(stop.clone(), halted.clone());
+            let o = o.clone();
+            tasks.spawn(
+                async move { ("Jetstream source", jetstream::run(client, o, url, s).await) },
+            );
+        }
     }
     if let Some(o) = opts.walk {
         let client = db::connect(&opts.database_url).await?;

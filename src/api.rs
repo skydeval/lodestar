@@ -745,7 +745,7 @@ async fn get_metrics(State(app): State<Arc<App>>) -> Result<String, Miss> {
     for r in db
         .query(
             "SELECT source, cursor, COALESCE(extract(epoch FROM now() - tip_at), -1)::float8, (phase = 'live')::int \
-             FROM sync_state WHERE source IN ('plc', 'jetstream')",
+             FROM sync_state WHERE source = 'plc' OR source LIKE 'jetstream:%'",
             &[],
         )
         .await?

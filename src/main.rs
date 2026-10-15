@@ -59,11 +59,13 @@ struct IngestArgs {
     #[arg(long, default_value_t = 0)]
     plc_max_pages: u64,
 
-    /// The Jetstream instance.
+    /// The Jetstream instances to subscribe to, separated by commas. Each
+    /// is subscribed to at once; losing one costs nothing while another
+    /// is live.
     #[arg(
         long,
         env = "LODESTAR_JETSTREAM_URL",
-        default_value = "wss://jetstream.us-east.bsky.network"
+        default_value = "wss://jetstream.us-east.bsky.network,wss://jetstream.us-west.bsky.network"
     )]
     jetstream_url: String,
     /// Reconnect when the subscription has been silent this long.
@@ -242,7 +244,12 @@ async fn main() -> Result<()> {
                     max_pages: a.plc_max_pages,
                 },
                 jetstream: (!a.no_jetstream).then(|| jetstream::Opts {
-                    url: a.jetstream_url.trim_end_matches('/').to_owned(),
+                    urls: a
+                        .jetstream_url
+                        .split(',')
+                        .map(|u| u.trim().trim_end_matches('/').to_owned())
+                        .filter(|u| !u.is_empty())
+                        .collect(),
                     user_agent: cli.user_agent.clone(),
                     quiet: Duration::from_secs(a.jetstream_quiet_seconds.max(60)),
                     event_cap: a.jetstream_event_cap,
