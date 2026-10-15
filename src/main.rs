@@ -40,22 +40,22 @@ struct IngestArgs {
     )]
     plc_url: String,
     /// Operations a page, at most 1,000.
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, env = "LODESTAR_PLC_PAGE_SIZE", default_value_t = 1000)]
     plc_page_size: u32,
     /// Least time between export requests during the first sync.
-    #[arg(long, default_value_t = 250)]
+    #[arg(long, env = "LODESTAR_PLC_MIN_INTERVAL_MS", default_value_t = 250)]
     plc_min_interval_ms: u64,
     /// How often the export is asked for more when there is no stream.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, env = "LODESTAR_PLC_POLL_SECONDS", default_value_t = 5)]
     plc_poll_seconds: u64,
     /// How often the export is asked to confirm the tip while streaming.
-    #[arg(long, default_value_t = 120)]
+    #[arg(long, env = "LODESTAR_PLC_TIP_CHECK_SECONDS", default_value_t = 120)]
     plc_tip_check_seconds: u64,
     /// Poll the export at the tip instead of taking the stream.
     #[arg(long)]
     plc_no_stream: bool,
     /// The recovery window with its margin, in hours.
-    #[arg(long, default_value_t = 84)]
+    #[arg(long, env = "LODESTAR_PLC_WINDOW_HOURS", default_value_t = 84)]
     plc_window_hours: i64,
     /// Stop after this many pages. 0 runs until stopped.
     #[arg(long, default_value_t = 0)]
@@ -71,10 +71,10 @@ struct IngestArgs {
     )]
     jetstream_url: String,
     /// Reconnect when the subscription has been silent this long.
-    #[arg(long, default_value_t = 300)]
+    #[arg(long, env = "LODESTAR_JETSTREAM_QUIET_SECONDS", default_value_t = 300)]
     jetstream_quiet_seconds: u64,
     /// Most events that may wait to be acted on. More are dropped.
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, env = "LODESTAR_JETSTREAM_EVENT_CAP", default_value_t = 10_000)]
     jetstream_event_cap: i64,
     /// Run without the Jetstream source.
     #[arg(long)]
@@ -89,10 +89,10 @@ struct IngestArgs {
     )]
     relay_url: String,
     /// Least time between listing requests.
-    #[arg(long, default_value_t = 250)]
+    #[arg(long, env = "LODESTAR_WALK_MIN_INTERVAL_MS", default_value_t = 250)]
     walk_min_interval_ms: u64,
     /// A finished walk is run again after this many days.
-    #[arg(long, default_value_t = 7)]
+    #[arg(long, env = "LODESTAR_WALK_EVERY_DAYS", default_value_t = 7)]
     walk_every_days: u64,
     /// Stop a walk after this many pages. 0 walks to the end.
     #[arg(long, default_value_t = 0)]
@@ -130,20 +130,25 @@ enum Cmd {
         #[arg(long, env = "LODESTAR_RESOLVER", default_value = "system")]
         resolver: String,
         /// Database connections used to apply results.
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, env = "LODESTAR_VERIFY_CONNECTIONS", default_value_t = 8)]
         connections: usize,
         /// A handle claimed by more identities than this is resolved
         /// once, for all of them. At most 254.
-        #[arg(long, default_value_t = 100)]
+        #[arg(long, env = "LODESTAR_SHARED_THRESHOLD", default_value_t = 100)]
         shared_threshold: u8,
         /// A shared handle is refreshed early no more often than this.
-        #[arg(long, default_value_t = 60)]
+        #[arg(long, env = "LODESTAR_SHARED_REFRESH_MINUTES", default_value_t = 60)]
         shared_refresh_minutes: u64,
         /// Domains with so many handles that each gets its own walker.
-        #[arg(long, value_delimiter = ',', default_value = "bsky.social")]
+        #[arg(
+            long,
+            env = "LODESTAR_LARGE_DOMAINS",
+            value_delimiter = ',',
+            default_value = "bsky.social"
+        )]
         large_domains: Vec<String>,
         /// How much of the accounts table a lap reads at a time, in blocks.
-        #[arg(long, default_value_t = 500)]
+        #[arg(long, env = "LODESTAR_LAP_CHUNK_BLOCKS", default_value_t = 500)]
         lap_chunk_blocks: i64,
         /// A control check, as dns:handle=did or https:handle=did. At
         /// least two of each method are needed, each on its own domain.
@@ -154,7 +159,7 @@ enum Cmd {
         #[arg(long)]
         unsafe_no_controls: bool,
         /// When a control pause starts, results this recent are checked again.
-        #[arg(long, default_value_t = 600)]
+        #[arg(long, env = "LODESTAR_LOOKBACK_SECONDS", default_value_t = 600)]
         lookback_seconds: u64,
         /// The starting values for rates and caps: vps or hobbyist.
         #[arg(long, env = "LODESTAR_PROFILE", default_value = "vps", value_parser = ["vps", "hobbyist"])]
@@ -168,20 +173,20 @@ enum Cmd {
         #[arg(long, env = "LODESTAR_LISTEN", default_value = "127.0.0.1:8080")]
         listen: String,
         /// Database connections to hold.
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, env = "LODESTAR_API_CONNECTIONS", default_value_t = 4)]
         connections: usize,
         /// The PLC source counts as fresh while its last tip confirmation
         /// is no older than this.
-        #[arg(long, default_value_t = 300)]
+        #[arg(long, env = "LODESTAR_PLC_FRESH_SECONDS", default_value_t = 300)]
         plc_fresh_seconds: i64,
         /// Most DIDs in one batch lookup.
-        #[arg(long, default_value_t = 1000)]
+        #[arg(long, env = "LODESTAR_MAX_BATCH", default_value_t = 1000)]
         max_batch: usize,
         /// How long a request waits on a live resolution, in seconds.
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, env = "LODESTAR_LIVE_DEADLINE_SECONDS", default_value_t = 5)]
         live_deadline_seconds: u64,
         /// Most checks consumers may have waiting, per kind of request.
-        #[arg(long, default_value_t = 10_000)]
+        #[arg(long, env = "LODESTAR_CONSUMER_QUEUE_CAP", default_value_t = 10_000)]
         consumer_queue_cap: i64,
     },
 }

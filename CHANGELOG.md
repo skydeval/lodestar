@@ -121,6 +121,9 @@ Work towards 0.1.0.
 - Config profiles for rates, `vps` and `hobbyist`, and per-domain
   rate overrides.
 - A README for operators.
+- Every setting can be given in the environment as well as by flag,
+  and the compose file passes every setting in `.env` to the roles.
+  The README lists them all with their defaults.
 - `docs/measurements.md`: how long the first build of the index took
   on the reference host, and what the first verification found.
 - A release workflow. A tag `v<version>` builds the x86-64 image,
@@ -236,6 +239,8 @@ Work towards 0.1.0.
 
 ### Fixed
 
+- rustls updated to 0.23.46 for RUSTSEC-2026-0346, -0347, -0348 and
+  -0349.
 - The verification role counted handle claims once, when it started.
   Started beside a first sync, it counted an empty table and would
   later have checked every claimant of a shared handle separately. It

@@ -13,6 +13,10 @@ x-lodestar: &lodestar
   depends_on:
     postgres:
       condition: service_healthy
+  # Every LODESTAR_ setting in .env reaches the roles; README lists them.
+  env_file:
+    - path: .env
+      required: false
   environment:
     LODESTAR_DATABASE_URL: postgres://lodestar:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/lodestar
     LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
