@@ -12,9 +12,6 @@ permissions:
 # was read from in a comment: a tag can be moved, a commit cannot.
 # `dtolnay/rust-toolchain` is pinned on its `stable` branch, whose action
 # installs the stable toolchain; `toolchain: stable` says so here too.
-#
-# The recon tooling under recon/ is its own workspace and is not built
-# here.
 
 env:
   CARGO_TERM_COLOR: always

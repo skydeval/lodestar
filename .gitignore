@@ -5,3 +5,6 @@ docs/internal/
 target/
 .env
 certs/
+# Development and research tooling, kept out of the published repository.
+recon/
+scripts/

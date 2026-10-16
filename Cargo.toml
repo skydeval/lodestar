@@ -3,10 +3,9 @@ name = "lodestar"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Identity index for the ATProto network."
+description = "A compact, read-only mirror of the PLC directory."
 license = "MIT OR Apache-2.0"
 
-# The recon tooling under recon/ is its own workspace.
 [workspace]
 
 [dependencies]
