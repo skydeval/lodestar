@@ -137,9 +137,9 @@ priority order. A lower number is served first.
 | Reason | | Queued by |
 |---|---|---|
 | 10 | **The claim changed.** A new directory operation or `did:web` document claims a different handle. | ingest, verify |
-| 20 | **A consumer looked up an account** whose handle is still `pending`. | api |
+| 20 | **A consumer looked up an account** whose handle is due (below). | api |
 | 21 | **A consumer asked for a refresh** of an account. | api |
-| 30 | **A batch lookup** included accounts whose handles were never checked. | api |
+| 30 | **A batch lookup** included accounts whose handles are due. | api |
 | 31 | **An identity event** named the account. | ingest |
 | 32 | **The relay walk** found an unseen `did:web`. | ingest |
 | 40 | **A retry** of a failing check. | verify |
@@ -148,8 +148,12 @@ priority order. A lower number is served first.
 | 43 | **A re-check** after a control pause or a dropped result. | verify |
 | 50 | **A `did:web` document's** regular refresh. | verify |
 
-Claim changes are never dropped. Consumer requests and events are each
-capped (10,000 waiting by default); past the cap the request is still
+A consumer's lookup queues a handle by the sweep's own test of being
+[due](#the-weekly-sweep), so a handle the current lap has not reached yet
+is checked when someone asks about it. A lookup does not queue the same
+account again within 10 minutes. Claim changes are never dropped.
+Consumer requests and events are each capped (10,000 waiting by
+default); past the cap the request is still
 answered from what lodestar holds, and the sweep covers the check.
 
 The worker reads the queue in priority order, skipping domains whose

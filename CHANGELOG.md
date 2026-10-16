@@ -267,6 +267,12 @@ Work towards 0.1.0.
   on 13 October one did, and cost a four-hour walk. A time means the
   same on every instance.
 
+- A consumer's lookup, single or batch, queues an account's handle
+  check when the handle is due by the sweep's own test (never checked,
+  or not since its lap began), not only when it was never checked. A
+  handle checked six days ago, whose lap has begun again, is checked
+  when someone asks instead of when the lap reaches it. A lookup does
+  not queue the same account again within 10 minutes.
 - After a slow read of the queue the worker rests three times as
   long before the next, up to three seconds, so a long queue takes a
   small share of the database's time.

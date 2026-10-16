@@ -109,8 +109,13 @@ atproto PDS it is stored and returned. If not, the answer is
 `not_an_account` and nothing is stored. A miss is remembered for a
 minute, so repeated requests do not repeat the fetch.
 
-**A handle still `pending`** is queued to be checked ahead of the sweep
-([Handle verification](handle-verification.md#the-queue)).
+**A handle that is due** is queued to be checked ahead of the sweep
+([Handle verification](handle-verification.md#the-queue)): one never
+checked, or not checked since its lap began, by the same test the sweep
+uses. So a lookup of an account checked six days ago, whose lap has
+started again, moves its check forward instead of waiting for the lap to
+reach it. A lookup does not queue the same account again within 10
+minutes.
 
 ## `GET /account/{did}/history`
 
@@ -158,7 +163,8 @@ A batch lookup, for consumers that resolve pages of accounts at a time.
 `{"error": "<word>"}`, with one `source` for the whole batch. More than
 1,000 DIDs (by default) is `batch_too_large`. A batch never waits on a
 live fetch: a `did:web` lodestar has not seen is answered `unknown`.
-Accounts whose handles were never checked are queued, up to a cap.
+Accounts whose handles are due are queued, as for a single lookup, up
+to a cap.
 
 ## `GET /handle/{handle}`
 

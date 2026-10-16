@@ -51,11 +51,18 @@ struct App {
     queue_cap: i64,
     /// Recent misses, so a repeated request does not repeat the work.
     misses: Mutex<HashMap<String, (Instant, StatusCode, &'static str)>>,
+    /// Accounts whose checks consumers' lookups queued lately.
+    queued: Mutex<HashMap<Vec<u8>, Instant>>,
 }
 
 /// How long a miss is remembered, and how many are.
 const MISS_TTL: Duration = Duration::from_secs(60);
 const MISS_CAP: usize = 10_000;
+/// An account a lookup queued is not queued again by another for this
+/// long, so a consumer asking about it over and over does not rewrite the
+/// queue each time. Its check is waiting anyway.
+const QUEUED_COOLDOWN: Duration = Duration::from_secs(600);
+const QUEUED_CAP: usize = 100_000;
 
 impl App {
     fn db(&self) -> &Client {
@@ -79,6 +86,30 @@ impl App {
             }
         }
         misses.insert(key.to_owned(), (Instant::now(), code, word));
+    }
+
+    /// Of these accounts, the ones no lookup has queued within the
+    /// cooldown, now marked as queued.
+    fn not_lately_queued(&self, dids: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        let mut queued = self.queued.lock().expect("queued lock");
+        if queued.len() + dids.len() > QUEUED_CAP {
+            queued.retain(|_, at| at.elapsed() < QUEUED_COOLDOWN);
+            if queued.len() + dids.len() > QUEUED_CAP {
+                queued.clear();
+            }
+        }
+        let now = Instant::now();
+        dids.into_iter()
+            .filter(|d| {
+                let fresh = queued
+                    .get(d)
+                    .is_none_or(|at| at.elapsed() >= QUEUED_COOLDOWN);
+                if fresh {
+                    queued.insert(d.clone(), now);
+                }
+                fresh
+            })
+            .collect()
     }
 
     /// Ask the verification role for a live resolution and wait for it, up
@@ -264,23 +295,40 @@ async fn source(app: &App) -> Result<(Value, bool)> {
 }
 
 /// The columns of an account answer. An active claimant of a shared handle
-/// takes its handle status and check time from the handle's row.
+/// takes its handle status and check time from the handle's row. The last
+/// is whether the handle is due (below).
 fn account_columns() -> String {
     format!(
         "a.did, a.method, a.status, p.endpoint, a.signing_key, a.handle_claim, \
          CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_status \
               WHEN s.did = a.did THEN 0::int2 WHEN s.did IS NOT NULL THEN 1::int2 ELSE s.outcome END, \
          to_char(CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_checked_at ELSE s.checked_at END AT TIME ZONE 'UTC', {TS}), \
-         to_char(a.created_at AT TIME ZONE 'UTC', {TS}), s.handle IS NOT NULL"
+         to_char(a.created_at AT TIME ZONE 'UTC', {TS}), s.handle IS NOT NULL, {DUE}"
     )
 }
 
-/// True for an account whose handle has a check of its own to make and has
-/// never had one: a consumer asking about it moves it ahead of the sweep.
+/// Whether an account's handle is due, as the sweep judges it: an active
+/// identity with a claim that can be resolved, not failing (a failing
+/// handle goes by its retry schedule), not a claimant of a shared handle
+/// (which reads the shared row), and not checked since its lap began. A
+/// large domain's handles go by its walker's lap, every other handle by the
+/// general lap's. Before any lap has begun, only a handle never checked is
+/// due.
+const DUE: &str = "COALESCE(a.status = 0 AND s.handle IS NULL AND a.handle_claim IS NOT NULL \
+     AND a.handle_status <> 5 \
+     AND NOT EXISTS (SELECT 1 FROM check_failures f WHERE f.did = a.did AND f.kind = 0) \
+     AND (a.handle_checked_at IS NULL OR a.handle_checked_at < COALESCE( \
+         (SELECT l.lap_started_at FROM sync_state l \
+          WHERE l.source LIKE 'lap:%' AND l.source <> 'lap:general' \
+            AND (a.handle_claim = substr(l.source, 5) \
+                 OR right(a.handle_claim, length(l.source) - 3) = '.' || substr(l.source, 5)) \
+          LIMIT 1), \
+         (SELECT lap_started_at FROM sync_state WHERE source = 'lap:general'))), false)";
+
+/// True for an account whose handle is due: a consumer asking about it
+/// moves its check ahead of the sweep.
 fn wants_check(r: &Row) -> bool {
-    r.get::<_, i16>(2) == db::STATUS_ACTIVE
-        && r.get::<_, i16>(6) == db::HANDLE_PENDING
-        && !r.get::<_, bool>(9)
+    r.get::<_, bool>(10)
 }
 
 /// The tables an account answer reads.
@@ -378,8 +426,9 @@ async fn get_account(
     match row {
         Some(r) => {
             if wants_check(&r) {
-                app.queue_check(&encoding::did_bytes(&did), queue::REASON_LOOKUP)
-                    .await?;
+                for key in app.not_lately_queued(vec![r.get(0)]) {
+                    app.queue_check(&key, queue::REASON_LOOKUP).await?;
+                }
             }
             let mut v = account_json(&r);
             v["source"] = src;
@@ -486,10 +535,11 @@ async fn post_accounts(
         };
         results.insert(did.clone(), json!({ "error": word }));
     }
-    // Never-checked handles in a batch go ahead of the sweep, up to a bound.
+    // Due handles in a batch go ahead of the sweep, up to a bound.
     let db = app.db();
     let room = app.queue_cap - queue::depth(db, queue::REASON_BATCH, app.queue_cap).await?;
     wanting.truncate(room.max(0) as usize);
+    let wanting = app.not_lately_queued(wanting);
     let items: Vec<queue::Item> = wanting
         .iter()
         .map(|d| queue::Item {
@@ -867,6 +917,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         live_deadline: opts.live_deadline,
         queue_cap: opts.queue_cap,
         misses: Mutex::new(HashMap::new()),
+        queued: Mutex::new(HashMap::new()),
     });
     if let Some(status_opts) = opts.status {
         let app = app.clone();
@@ -949,5 +1000,79 @@ mod tests {
         assert_eq!(absent(Method::Plc, true).1, "not_found");
         assert_eq!(absent(Method::Plc, false).1, "syncing");
         assert_eq!(absent(Method::Web, true).1, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_handle_is_due_by_its_own_lap() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        // The general lap began a day ago, bsky.social's walker three.
+        client
+            .batch_execute(
+                "INSERT INTO sync_state (source, origin, cursor, phase, lap_started_at) VALUES \
+                 ('lap:general', '', 0, 'idle', now() - interval '1 day'), \
+                 ('lap:bsky.social', '', 0, 'idle', now() - interval '3 days'); \
+                 INSERT INTO shared_handles (outcome, handle) VALUES (0, 'shared.example');",
+            )
+            .await
+            .unwrap();
+        // (claim, status, handle_status, checked hours ago)
+        let accounts: [(&str, i16, i16, Option<i32>); 9] = [
+            ("plain.example", 0, 0, Some(48)),
+            ("recent.example", 0, 0, Some(1)),
+            ("alice.bsky.social", 0, 0, Some(48)),
+            ("bob.bsky.social", 0, 4, None),
+            ("evilbsky.social", 0, 0, Some(48)),
+            ("failing.example", 0, 0, Some(48)),
+            ("shared.example", 0, 4, None),
+            ("gone.example", 1, 4, None),
+            ("nothing.invalid", 0, 5, None),
+        ];
+        for (i, (claim, status, handle_status, hours)) in accounts.iter().enumerate() {
+            client
+                .execute(
+                    "INSERT INTO accounts (created_at, method, status, handle_status, did, handle_claim, handle_checked_at) \
+                     VALUES (now(), 0, $1, $2, $3, $4, now() - make_interval(hours => $5))",
+                    &[status, handle_status, &vec![1u8, i as u8], claim, hours],
+                )
+                .await
+                .unwrap();
+        }
+        client
+            .execute(
+                "INSERT INTO check_failures (next_attempt_at, kind, did) VALUES (now(), 0, $1)",
+                &[&vec![1u8, 5u8]],
+            )
+            .await
+            .unwrap();
+        let due: Vec<(String, bool)> = client
+            .query(
+                &format!("SELECT a.handle_claim, {DUE} FROM {ACCOUNT_FROM} ORDER BY a.did"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        let expect = [
+            ("plain.example", true),
+            // Checked since the general lap began.
+            ("recent.example", false),
+            // Checked since bsky.social's own walker began.
+            ("alice.bsky.social", false),
+            ("bob.bsky.social", true),
+            // Not under bsky.social: the general lap's test.
+            ("evilbsky.social", true),
+            // Failing: its retries come from its own schedule.
+            ("failing.example", false),
+            // A shared handle's claimant reads the shared row.
+            ("shared.example", false),
+            ("gone.example", false),
+            ("nothing.invalid", false),
+        ];
+        let got: Vec<(&str, bool)> = due.iter().map(|(c, d)| (c.as_str(), *d)).collect();
+        assert_eq!(got, expect);
     }
 }
