@@ -19,6 +19,9 @@ use tokio_postgres::{Client, Row};
 use crate::verify::requests;
 use crate::{db, encoding, handle, queue};
 
+mod status;
+pub use status::Opts as StatusOpts;
+
 pub struct Opts {
     pub database_url: String,
     pub listen: String,
@@ -31,6 +34,8 @@ pub struct Opts {
     pub live_deadline: Duration,
     /// Most checks consumers may have waiting, per kind of request.
     pub queue_cap: i64,
+    /// The status page, on an address of its own. None leaves it off.
+    pub status: Option<status::Opts>,
 }
 
 struct App {
@@ -846,6 +851,14 @@ pub async fn run(opts: Opts) -> Result<()> {
         queue_cap: opts.queue_cap,
         misses: Mutex::new(HashMap::new()),
     });
+    if let Some(status_opts) = opts.status {
+        let app = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = status::run(app, status_opts).await {
+                tracing::error!("the status page stopped: {e:#}");
+            }
+        });
+    }
     let router = Router::new()
         .route("/account/{did}", get(get_account))
         .route("/account/{did}/history", get(get_history))

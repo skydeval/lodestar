@@ -94,7 +94,7 @@ flag of the same name in lower case (`LODESTAR_WALK_EVERY_DAYS` is
 | `LODESTAR_CONTROLS` | verify | none, required | the control checks |
 | `LODESTAR_PROFILE` | verify | `vps` | starting rates: `vps` or `hobbyist` |
 | `LODESTAR_RATES` | verify | none | fixed rates for named domains, as `domain=rate:in_flight` |
-| `LODESTAR_RESOLVER` | verify | `system` | the DNS resolver: `system` or an address |
+| `LODESTAR_RESOLVER` | verify | `system` | the DNS resolver: `system`, or addresses separated by commas, asked in turn when one fails |
 | `LODESTAR_LARGE_DOMAINS` | verify | `bsky.social` | domains swept by a walker of their own |
 | `LODESTAR_SHARED_THRESHOLD` | verify | 100 | a handle claimed by more identities is resolved once for all |
 | `LODESTAR_SHARED_REFRESH_MINUTES` | verify | 60 | least time between early refreshes of a shared handle |
@@ -107,9 +107,17 @@ flag of the same name in lower case (`LODESTAR_WALK_EVERY_DAYS` is
 | `LODESTAR_MAX_BATCH` | api | 1000 | most DIDs in one batch lookup |
 | `LODESTAR_LIVE_DEADLINE_SECONDS` | api | 5 | how long a lookup waits on a live check |
 | `LODESTAR_CONSUMER_QUEUE_CAP` | api | 10000 | most consumer-requested checks waiting, per kind |
+| `LODESTAR_STATUS_LISTEN` | api | off | where the status page listens inside its container |
+| `LODESTAR_STATUS_TOTALS_MINUTES` | api | 60 | how often the status page's totals are counted; each count reads all of `accounts` |
 
-`LODESTAR_API_BIND` and `POSTGRES_PASSWORD` are read by
-`compose.yaml` itself.
+`LODESTAR_API_BIND`, `LODESTAR_STATUS_BIND` and `POSTGRES_PASSWORD`
+are read by `compose.yaml` itself.
+
+A resolver at one address is asked about three queries per check at
+the most, so the default global rate of 400 checks a second can
+reach 1,200 a second. Public resolvers serve one address about
+1,500 a second and drop the rest; verification warns at start-up
+when its rates could pass 1,400.
 
 ## API
 
@@ -122,6 +130,11 @@ flag of the same name in lower case (`LODESTAR_WALK_EVERY_DAYS` is
 | `POST /account/{did}/refresh` | re-fetches a `did:web` document and re-checks the handle |
 | `GET /ops/health` | sync position, verification, storage |
 | `GET /ops/metrics` | the same, in Prometheus format |
+
+The status page, when `LODESTAR_STATUS_LISTEN` turns it on, is on an
+address of its own and serves only `GET /status/` and its figures at
+`GET /status/data.json`. It names no control handle, so it can be
+made public while the API stays private.
 
 A handle is reported as an account's `handle` only when lodestar
 has verified it: the account claims the handle, and the handle

@@ -182,6 +182,12 @@ Work towards 0.1.0.
   - A rate probe that checks handles at stepped rates and stops at
     the first refusal, with a build script for hosts older than the
     recon host.
+- A read-only status page at `/status/`, served by the api role on an
+  address of its own (`LODESTAR_STATUS_LISTEN`) and off unless one is
+  given. It shows the sync position, the streams, verification and
+  totals counted hourly in the background, and serves nothing else;
+  the control handles appear only as a count, so it can be made
+  public while the API stays private.
 
 ### Changed
 
@@ -237,6 +243,16 @@ Work towards 0.1.0.
   long before the next, up to three seconds, so a long queue takes a
   small share of the database's time.
 
+- The DNS library is hickory-resolver 0.26. `LODESTAR_RESOLVER` takes
+  several addresses separated by commas, asked in turn when one
+  fails.
+- Verification warns at start-up when its global rate could ask more
+  than 1,400 DNS queries a second. A public resolver serves one
+  address about 1,500 a second and drops the rest: measured, Google's
+  answered everything up to 1,500 a second and dropped a fifth at
+  2,000, and Cloudflare's answered a fifth to a third with `SERVFAIL`
+  from 1,000.
+
 ### Fixed
 
 - A domain that answered 401 or 403 kept its rate. A refusal now
@@ -252,6 +268,8 @@ Work towards 0.1.0.
   warned about at start-up.
 - rustls updated to 0.23.46 for RUSTSEC-2026-0346, -0347, -0348 and
   -0349.
+- RUSTSEC-2026-0118 and -0119 against hickory-proto 0.25 are fixed by
+  the move to 0.26 and no longer ignored.
 - The verification role counted handle claims once, when it started.
   Started beside a first sync, it counted an empty table and would
   later have checked every claimant of a shared handle separately. It

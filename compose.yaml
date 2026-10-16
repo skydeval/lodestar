@@ -85,6 +85,9 @@ services:
     # network, or change this to an address on one.
     ports:
       - "${LODESTAR_API_BIND:-127.0.0.1:8080}:8080"
+      # The status page, when LODESTAR_STATUS_LISTEN turns it on. It
+      # serves only the page and its figures, so it can be made public.
+      - "${LODESTAR_STATUS_BIND:-127.0.0.1:8090}:8090"
 
 volumes:
   pgdata:

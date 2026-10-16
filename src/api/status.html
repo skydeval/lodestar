@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lodestar status</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #16181d; --muted: #5d6573;
+    --line: #e3e6eb; --good: #18794e; --warn: #a35200; --bad: #c4321f;
+    --bar: #2f6fdb; --bar-2: #8a96a8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101216; --card: #181b21; --ink: #e8eaee; --muted: #9aa3b2;
+      --line: #2a2f38; --good: #4cc38a; --warn: #f0a24b; --bad: #ff7a66;
+      --bar: #6a9cff; --bar-2: #5b6575;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: 0.2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .row:first-of-type { border-top: 0; }
+  .row span:first-child { color: var(--muted); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--muted); }
+  .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .dot.good { background: var(--good); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin: 10px 0 6px; }
+  .bar i { display: block; height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }
+  .legend b { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .wide { grid-column: 1 / -1; }
+  ul.tags { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  ul.tags li { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #error { display: none; margin-bottom: 14px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>lodestar</h1>
+    <span class="sub" id="version"></span>
+    <span class="sub" id="updated">loading…</span>
+  </header>
+  <div id="error">The status figures could not be read. Retrying.</div>
+  <div class="grid">
+    <section class="card">
+      <h2>Directory copy</h2>
+      <div class="big" id="plc-state">–</div>
+      <div id="plc-rows"></div>
+    </section>
+    <section class="card">
+      <h2>Handles</h2>
+      <div class="big" id="verified">–</div>
+      <div class="bar" id="status-bar"></div>
+      <div class="legend" id="status-legend"></div>
+      <div class="note" id="totals-note"></div>
+    </section>
+    <section class="card">
+      <h2>Sweep</h2>
+      <div class="big" id="sweep-state">–</div>
+      <div id="sweep-rows"></div>
+    </section>
+    <section class="card">
+      <h2>Verification</h2>
+      <div class="big" id="rate">–</div>
+      <div id="verify-rows"></div>
+    </section>
+    <section class="card">
+      <h2>Sources</h2>
+      <div id="streams"></div>
+    </section>
+    <section class="card">
+      <h2>Domains</h2>
+      <div id="domain-rows"></div>
+      <ul class="tags" id="climbed"></ul>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n === null || n === undefined) ? "–" : Number(n).toLocaleString("en-US");
+const pct = (a, b) => b ? (100 * a / b).toFixed(1) + "%" : "–";
+const bytes = (n) => {
+  if (!n) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+};
+const ago = (iso, now) => {
+  if (!iso) return "never";
+  const s = Math.max(0, (Date.parse(now) - Date.parse(iso)) / 1000);
+  if (s < 90) return Math.round(s) + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+};
+const when = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "–";
+const row = (k, v, cls) => `<div class="row"><span>${k}</span><span class="${cls || ""}">${v}</span></div>`;
+const dot = (cls) => `<span class="dot ${cls}"></span>`;
+
+let last = null;
+
+function render(d) {
+  const now = d.now;
+  $("version").textContent = "version " + d.version;
+  $("updated").textContent = "updated " + new Date(now).toLocaleTimeString();
+
+  // The copy of the PLC directory.
+  const p = d.plc || {};
+  const live = d.plc_live;
+  $("plc-state").innerHTML = live ? dot("good") + "Current"
+    : p.phase === "backfill" ? dot("warn") + "First sync" : dot("bad") + "Behind";
+  $("plc-rows").innerHTML =
+    row("Operations applied", fmt(p.cursor)) +
+    row("Newest operation", ago(p.last_operation_created_at, now)) +
+    row("Tip last confirmed", ago(p.tip_confirmed_at, now)) +
+    row("Identities", fmt(d.totals && d.totals.identities));
+
+  // Handle statuses, from the periodic count.
+  const t = d.totals || {};
+  const by = t.active_by_handle_status || {};
+  const parts = [
+    ["verified", "Verified", "var(--good)"],
+    ["mismatch", "Points elsewhere", "var(--warn)"],
+    ["unresolved", "Points nowhere", "var(--bar-2)"],
+    ["unreachable", "Unreachable", "var(--bad)"],
+    ["pending", "Not yet checked", "var(--line)"],
+  ];
+  const checked = parts.reduce((a, [k]) => a + (by[k] || 0), 0);
+  $("verified").textContent = by.verified !== undefined ? fmt(by.verified) + " verified" : "counting…";
+  $("status-bar").innerHTML = parts.map(([k, , c]) =>
+    `<i style="width:${checked ? 100 * (by[k] || 0) / checked : 0}%;background:${c}"></i>`).join("");
+  $("status-legend").innerHTML = parts.filter(([k]) => by[k]).map(([k, label, c]) =>
+    `<span><b style="background:${c}"></b>${label} ${fmt(by[k])}</span>`).join("");
+  $("totals-note").textContent = t.counted_at
+    ? "Active accounts with a handle claim. Counted " + ago(t.counted_at, now) + "; accounts sharing a handle claimed by very many take its status."
+    : "The first count is running.";
+
+  // The weekly sweep.
+  const v = d.verification || {};
+  const laps = v.laps || {};
+  const lapList = Object.values(laps);
+  const running = lapList.filter((l) => l.pass && l.pass !== "idle");
+  const started = lapList.map((l) => l.started_at).filter(Boolean).sort().pop();
+  const next = started ? new Date(Date.parse(started) + 7 * 86400 * 1000).toISOString() : null;
+  $("sweep-state").innerHTML = running.length ? dot("good") + "Running" : dot("") + "Idle";
+  $("sweep-rows").innerHTML =
+    row("Last started", when(started)) +
+    row(running.length ? "Pass" : "Next starts", running.length
+      ? running.map((l) => l.pass === "listed" ? "accounts with a repo" : "everything else").join(", ")
+      : when(next)) +
+    row("Waiting in the queue", fmt(Object.values(v.queue || {}).reduce((a, b) => a + b, 0))) +
+    row("Retrying after a failure", fmt(v.checks_failing));
+
+  // Checks per second, from two readings of the worker's counters.
+  const w = v.worker || {};
+  const c = w.checks || {};
+  const done = (c.verified || 0) + (c.mismatch || 0) + (c.nothing || 0) + (c.failing || 0);
+  let rate = null;
+  if (last && last.done !== undefined && w.reported_at && last.at && w.reported_at !== last.at) {
+    const dt = (Date.parse(w.reported_at) - Date.parse(last.at)) / 1000;
+    if (dt > 0 && done >= last.done) rate = (done - last.done) / dt;
+  }
+  if (w.reported_at && (!last || last.at !== w.reported_at)) last = { done, at: w.reported_at, rate };
+  const shown = rate !== null ? rate : (last && last.rate);
+  $("rate").textContent = shown !== null && shown !== undefined ? fmt(Math.round(shown)) + " checks/s" : "measuring…";
+  const ctl = v.controls || {};
+  const ctlOk = ctl.counted && ctl.passing === ctl.counted;
+  $("verify-rows").innerHTML =
+    row("Self-checks", (ctlOk ? dot("good") : dot("bad")) + `${ctl.passing || 0} of ${ctl.counted || 0} passing`) +
+    row("Verification paused", w.paused_by_controls ? "yes" : "no", w.paused_by_controls ? "bad" : "") +
+    row("Checks in flight", fmt(w.in_flight)) +
+    row("Worker reported", ago(w.reported_at, now));
+
+  // Sources other than the directory.
+  $("streams").innerHTML = (d.streams || []).map((s) => {
+    if (s.source === "relay-walk") {
+      return row("Relay walk", s.phase === "done" ? "last finished " + ago(s.at, now) : (s.phase === "walking" || s.phase === "merging") ? "running" : s.phase);
+    }
+    const name = s.source.replace(/^jetstream:/, "").replace(/^jetstream\d?\./, "").replace(/\.bsky\.network$/, "");
+    return row("Jetstream " + name, (s.current ? dot("good") + "live" : dot("warn") + "last " + ago(s.at, now)));
+  }).join("") + row("Database", bytes(d.database_bytes));
+
+  // Domains held back, and the ones answering fast.
+  const pauses = v.pauses || [];
+  const failing = pauses.filter((x) => x.pause.startsWith("pause2:") && x.state === "paused").length;
+  const nothing = pauses.filter((x) => x.pause.startsWith("pause3:") && x.state === "paused").length;
+  $("domain-rows").innerHTML =
+    row("Paused, not answering", fmt(failing), failing ? "warn" : "") +
+    row("Paused, answers look wrong", fmt(nothing), nothing ? "bad" : "") +
+    row("Shared handles", fmt(v.shared_handles)) +
+    row("Running faster than 1/s", fmt((w.domains_climbed || []).length));
+  $("climbed").innerHTML = (w.domains_climbed || []).slice(0, 12)
+    .map(([name, r]) => `<li>${name} · ${r}/s</li>`).join("");
+}
+
+async function tick() {
+  try {
+    const r = await fetch("data.json", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    $("error").style.display = "none";
+  } catch (e) {
+    $("error").style.display = "block";
+  }
+}
+tick();
+setInterval(tick, 30000);
+</script>
+</body>
+</html>

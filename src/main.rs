@@ -188,6 +188,14 @@ enum Cmd {
         /// Most checks consumers may have waiting, per kind of request.
         #[arg(long, env = "LODESTAR_CONSUMER_QUEUE_CAP", default_value_t = 10_000)]
         consumer_queue_cap: i64,
+        /// Serve the read-only status page at /status/ on this address.
+        /// It serves nothing else, so it can be made public. Off if unset.
+        #[arg(long, env = "LODESTAR_STATUS_LISTEN")]
+        status_listen: Option<String>,
+        /// How often the status page's totals are counted, in minutes.
+        /// Each count reads the whole accounts table.
+        #[arg(long, env = "LODESTAR_STATUS_TOTALS_MINUTES", default_value_t = 60)]
+        status_totals_minutes: u64,
     },
 }
 
@@ -333,8 +341,17 @@ async fn main() -> Result<()> {
             max_batch,
             live_deadline_seconds,
             consumer_queue_cap,
+            status_listen,
+            status_totals_minutes,
         } => {
             drop(client);
+            let status = status_listen
+                .filter(|l| !l.trim().is_empty())
+                .map(|listen| api::StatusOpts {
+                    database_url: cli.database_url.clone(),
+                    listen,
+                    totals_every: Duration::from_secs(status_totals_minutes.max(1) * 60),
+                });
             let opts = api::Opts {
                 database_url: cli.database_url,
                 listen,
@@ -343,6 +360,7 @@ async fn main() -> Result<()> {
                 max_batch,
                 live_deadline: Duration::from_secs(live_deadline_seconds.max(1)),
                 queue_cap: consumer_queue_cap,
+                status,
             };
             api::run(opts).await?;
         }
