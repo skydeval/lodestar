@@ -1,7 +1,7 @@
 # Deployment
 
 How lodestar is meant to be run, and what it costs to run. The
-[README](../../README.md#running-it) has the steps; this page has the
+[running guide](../running.md) has the steps; this page has the
 reasoning and the budgets.
 
 ## The reference host

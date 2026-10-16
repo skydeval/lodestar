@@ -17,12 +17,11 @@ and history, not the signed operations, which is what keeps it
 small; it never writes to the directory.
 
 The read API is publicly accessible, behind a reverse proxy that
-passes only the read paths (see [Going public](#going-public)). There is no
+passes only the read paths (see
+[Going public](docs/running.md#going-public)). There is no
 authentication, and nothing public can change anything.
 
 **Status:** 0.1 is in progress. See `CHANGELOG.md`.
-
-How it works, and why: [docs/design](docs/design/README.md).
 
 ## What it needs
 
@@ -48,204 +47,29 @@ One binary, three roles, each its own process:
 
 They coordinate only through the database.
 
-## Running it
+## Quick start
 
-Clone this repository (you need `compose.yaml`, `Caddyfile` and
-`.env.example` from it), then:
+Clone this repository, then:
 
 ```sh
-cp .env.example .env    # then fill it in
+cp .env.example .env    # then fill in its three required settings
 docker compose up -d
 ```
 
-That pulls the released image, `ghcr.io/skydeval/lodestar`, at the
-version `compose.yaml` names, and starts Postgres, the three roles and
-Caddy. To build the image from the checkout instead, run
-`docker compose build` first.
+[Running lodestar](docs/running.md) says what the three settings are,
+including how to choose the control checks, and how to put it on your
+own domain.
 
-`.env` needs three things:
+## Documentation
 
-- `POSTGRES_PASSWORD`: a long random one, such as the output of
-  `openssl rand -hex 24`.
-- `LODESTAR_USER_AGENT`, sent on every outbound request. Name
-  yourself and a way to reach you.
-- `LODESTAR_CONTROLS`, the control checks. See below.
-
-The API and the status page listen on the host's loopback
-(`127.0.0.1:8080` and `:8090`); the public reaches them through Caddy
-on port 80, or 443 once you give it a domain (see
-[Going public](#going-public)).
-
-### Control checks
-
-Lodestar resolves a few well-known handles every minute, purely as a
-test of its own network: that its DNS resolver answers, that it can
-open HTTPS connections, that its clock and certificates are sound. If
-most of them suddenly fail, the fault is almost certainly Lodestar's
-own, not the handles', so it stops verifying until they pass again,
-instead of marking thousands of real handles broken because of its own
-outage.
-
-So control handles are canaries, nothing more:
-
-- **They don't need to be yours.** Any handles that resolve reliably
-  will do: someone's long-standing handle, a project's account. Lodestar
-  only reads them, once a minute, the same way it reads any handle.
-- **You need at least two of each kind**, each on its own domain:
-  two that resolve by **DNS** (a `_atproto` TXT record) and two that
-  resolve by **HTTPS** (`/.well-known/atproto-did`). Each kind tests a
-  different path, and Lodestar won't start without them.
-- **Pick stable ones.** A control that has failed for a day while the
-  others pass is left out of the count and reported in health, so a
-  handle that changes hands doesn't stop verification. But it is better
-  replaced.
-
-To check a handle and find its DID and kind:
-
-```sh
-dig +short TXT _atproto.example.com
-# "did=did:plc:…"  →  resolves by DNS
-
-curl -s https://example.com/.well-known/atproto-did
-# did:plc:…        →  resolves by HTTPS (only if the DNS record is missing)
-```
-
-A handle with a DNS record counts as DNS. Write each as
-`dns:handle=did` or `https:handle=did`, comma-separated:
-
-```
-LODESTAR_CONTROLS=dns:alice.example.com=did:plc:aaaa…,dns:bob.example.org=did:plc:bbbb…,https:carol.example.net=did:plc:cccc…,https:dave.example.io=did:plc:dddd…
-```
-
-## Configuration
-
-Everything else has a default that suits the reference host. Any
-setting can go in `.env` by its name, or be passed to a role as a
-flag of the same name in lower case (`LODESTAR_WALK_EVERY_DAYS` is
-`--walk-every-days`). A list is comma-separated.
-
-| Setting | Role | Default | What it does |
-|---|---|---|---|
-| `LODESTAR_DATABASE_URL` | all | set by `compose.yaml` | Postgres connection string |
-| `LODESTAR_USER_AGENT` | all | none, required | sent on every outbound request |
-| `LODESTAR_PLC_URL` | ingest | `https://plc.directory` | the PLC directory |
-| `LODESTAR_PLC_PAGE_SIZE` | ingest | 1000 | operations asked for a page, at most 1,000 |
-| `LODESTAR_PLC_MIN_INTERVAL_MS` | ingest | 250 | least time between export requests in the first sync |
-| `LODESTAR_PLC_POLL_SECONDS` | ingest | 5 | how often the export is polled when there is no stream |
-| `LODESTAR_PLC_TIP_CHECK_SECONDS` | ingest | 120 | how often the export confirms the tip while streaming |
-| `LODESTAR_PLC_WINDOW_HOURS` | ingest | 84 | the recovery window with its margin |
-| `LODESTAR_JETSTREAM_URL` | ingest | Bluesky's east and west instances | the Jetstream instances, each subscribed to at once |
-| `LODESTAR_JETSTREAM_QUIET_SECONDS` | ingest | 300 | reconnect after this long without a message |
-| `LODESTAR_JETSTREAM_EVENT_CAP` | ingest | 10000 | most event checks that may wait in the queue |
-| `LODESTAR_RELAY_URL` | ingest | Bluesky's east and west relays | the relays a walk may use; it picks the fastest |
-| `LODESTAR_WALK_MIN_INTERVAL_MS` | ingest | 250 | least time between listing requests |
-| `LODESTAR_WALK_EVERY_DAYS` | ingest | 7 | how often the relay walk runs again |
-| `LODESTAR_CONTROLS` | verify | none, required | the control checks |
-| `LODESTAR_PROFILE` | verify | `vps` | starting rates: `vps` or `hobbyist` |
-| `LODESTAR_RATES` | verify | none | fixed rates for named domains, as `domain=rate:in_flight` |
-| `LODESTAR_RESOLVER` | verify | `system` | the DNS resolver: `system`, or addresses separated by commas, asked in turn when one fails |
-| `LODESTAR_LARGE_DOMAINS` | verify | `bsky.social` | domains swept by a walker of their own |
-| `LODESTAR_SHARED_THRESHOLD` | verify | 100 | a handle claimed by more identities is resolved once for all |
-| `LODESTAR_SHARED_REFRESH_MINUTES` | verify | 60 | least time between early refreshes of a shared handle |
-| `LODESTAR_LAP_CHUNK_BLOCKS` | verify | 500 | how much of `accounts` a lap reads at a time |
-| `LODESTAR_LOOKBACK_SECONDS` | verify | 600 | results this recent are checked again after a control pause |
-| `LODESTAR_VERIFY_CONNECTIONS` | verify | 8 | database connections for applying results |
-| `LODESTAR_LISTEN` | api | `127.0.0.1:8080` | where the API listens inside its container |
-| `LODESTAR_API_CONNECTIONS` | api | 4 | database connections held |
-| `LODESTAR_PLC_FRESH_SECONDS` | api | 300 | the PLC source counts as fresh this long after a tip confirmation |
-| `LODESTAR_MAX_BATCH` | api | 1000 | most DIDs in one batch lookup |
-| `LODESTAR_LIVE_DEADLINE_SECONDS` | api | 5 | how long a lookup waits on a live check |
-| `LODESTAR_CONSUMER_QUEUE_CAP` | api | 10000 | most consumer-requested checks waiting, per kind |
-| `LODESTAR_STATUS_LISTEN` | api | `0.0.0.0:8090` in compose, off otherwise | where the status page listens inside its container; empty turns it off |
-| `LODESTAR_STATUS_TOTALS_MINUTES` | api | 60 | how often the status page's totals are counted; each count reads all of `accounts` |
-
-`LODESTAR_API_BIND`, `LODESTAR_STATUS_BIND` and `POSTGRES_PASSWORD`
-are read by `compose.yaml` itself, as are the bundled Caddy's two
-settings: `LODESTAR_DOMAIN`, the domain it serves with HTTPS (plain
-HTTP on port 80 if unset), and `LODESTAR_PROXY=0`, which turns it off.
-
-A resolver at one address is asked about three queries per check at
-the most, so the default global rate of 400 checks a second can
-reach 1,200 a second. Public resolvers serve one address about
-1,500 a second and drop the rest; verification warns at start-up
-when its rates could pass 1,400.
-
-## API
-
-| Endpoint | Answers |
+| | |
 |---|---|
-| `GET /account/{did}` | PDS, signing key, handle and its status, account status |
-| `GET /account/{did}/history` | handle-claim and PDS changes, newest first |
-| `POST /accounts` | the same as the first, for up to 1,000 DIDs: `{"dids": [...]}` |
-| `GET /handle/{handle}` | the DID that holds a verified handle |
-| `GET /{did}` | a `did:plc`'s DID document, as `plc.directory` gives it |
-| `POST /account/{did}/refresh` | re-fetches a `did:web` document and re-checks the handle |
-| `GET /ops/health` | sync position, verification, storage |
-| `GET /ops/metrics` | the same, in Prometheus format |
-
-The status page is on an address of its own and serves only
-`GET /status/` and its figures at `GET /status/data.json`. It names
-nothing private.
-
-A handle is reported as an account's `handle` only when lodestar
-has verified it: the account claims the handle, and the handle
-resolves back to the account. Otherwise it appears as
-`claimed_handle`, with a `handle_status` saying why.
-
-Every account answer carries the PLC source's position, so a
-consumer can tell how fresh it is. An identity lodestar does not
-have is `not_found` only when the source is at the directory's tip;
-before that it is `syncing`.
-
-## Going public
-
-The API and status page listen on the host's loopback. The public
-reaches them through a proxy that passes only the status page and
-the reads above; `/ops/*` and the refresh request stay unreachable.
-[Caddyfile](Caddyfile) holds those rules, and compose runs Caddy with
-them by default: on plain HTTP port 80 until you give it a domain.
-
-**For HTTPS on your own domain:**
-
-1. Point the domain at the host (A, and AAAA for IPv6). Behind
-   Cloudflare's proxy, either use "DNS only" or give Caddy a
-   certificate of your own (see Caddyfile's `tls` line).
-2. Open ports 80 and 443.
-3. In `.env`: `LODESTAR_DOMAIN=lodestar.example.com`.
-4. `docker compose up -d`. Caddy fetches its certificate within a
-   minute and renews it itself.
-
-**On a host that already runs a proxy** (one shared with a PDS, say),
-set `LODESTAR_PROXY=0` in `.env` to leave the bundled one off, and copy
-Caddyfile's rules into yours, with `127.0.0.1:8080` and
-`127.0.0.1:8090` in place of `api:8080` and `api:8090`.
-
-## Politeness
-
-Lodestar asks other people's servers a great many small questions.
-It limits itself per registrable domain (one check a second by
-default), backs away from a host that stalls or asks it to wait, and
-stops verifying altogether when its own network looks broken. Rates
-are config: `LODESTAR_PROFILE=hobbyist` lowers them all, and
-`LODESTAR_RATES` sets one domain's.
-
-## Building
-
-```sh
-cargo build --release
-cargo test
-```
-
-The tests that need Postgres run when `LODESTAR_TEST_DATABASE_URL`
-names a database they may create tables in; without it they are
-skipped.
-
-## Releasing
-
-Set the version in `Cargo.toml` and `compose.yaml`, give the version
-its section in `CHANGELOG.md`, and push a tag `v<version>`. The
-`image` workflow builds the image, pushes it, and creates the
-release from that section of the changelog.
+| [Running lodestar](docs/running.md) | Setting up, control checks, going public, politeness |
+| [Configuration](docs/configuration.md) | Every setting and its default |
+| [API](docs/api.md) | The endpoints, and what their answers mean |
+| [Measurements](docs/measurements.md) | How long it takes and how big it gets, on the reference host |
+| [Design](docs/design/README.md) | How it works, and why |
+| [Development](docs/development.md) | Building, testing and releasing |
 
 ## Licence
 

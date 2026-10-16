@@ -144,7 +144,7 @@ requests in flight. Compose allows each role 40 seconds.
   ([Deployment](deployment.md#going-public)).
 - Settings are command-line flags, and every setting an operator
   normally needs also has a `LODESTAR_` environment name; the
-  [README](../../README.md#configuration) lists those. A few switches
+  [configuration](../configuration.md) lists those. A few switches
   meant for testing, such as `--no-jetstream` or `--plc-max-pages`, are
   flags only.
 
