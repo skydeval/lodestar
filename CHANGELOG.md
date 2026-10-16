@@ -321,6 +321,11 @@ Work towards 0.1.0.
   reference host's disk. Parts that differ only in their names are now
   kept only for identities with a repo; extra keys and services are
   kept for all. The document pass runs again under the new rule.
+- On a new copy the document pass was marked done at the start, but the
+  first sync runs before the first walk, when nothing is listed, so
+  listed accounts whose names differ never got their parts. The pass
+  now waits for a relay walk to finish and then runs, on a new copy as
+  on an old one.
 - The verification role counted handle claims once, when it started.
   Started beside a first sync, it counted an empty table and would
   later have checked every claimant of a shared handle separately. It

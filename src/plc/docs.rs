@@ -32,12 +32,27 @@ struct Pass {
     started: String,
 }
 
-/// Begin a pass, or find the one under way. None when there is nothing to do.
+/// What the pass is to do next.
+enum Next {
+    /// Done, or nothing to do.
+    Nothing,
+    /// Not yet: the first relay walk has not finished.
+    Wait,
+    Run(Pass),
+}
+
+/// Begin a pass, or find the one under way.
+///
+/// The pass begins only once a relay walk has finished. Parts that differ
+/// only in their names are kept for identities with a repo, and on a new
+/// copy nothing is known to have one until the first walk has listed them.
+/// So a first sync, which writes parts as it goes, still needs this pass
+/// after its walk, for the listed identities' names.
 ///
 /// The pass relies on the recovery window (84 hours by default) to see which
 /// identities the PLC source has changed since it began, so one that began
 /// more than 72 hours ago starts again.
-async fn prepare(client: &Client, origin: &str) -> Result<Option<Pass>> {
+async fn prepare(client: &Client, origin: &str) -> Result<Next> {
     let row = client
         .query_opt(
             "SELECT cursor, phase, position, started_at::text, \
@@ -49,11 +64,11 @@ async fn prepare(client: &Client, origin: &str) -> Result<Option<Pass>> {
     if let Some(r) = row {
         let phase: String = r.get(1);
         if phase == "done" {
-            return Ok(None);
+            return Ok(Next::Nothing);
         }
         if r.get::<_, bool>(4) {
             let until: Option<String> = r.get(2);
-            return Ok(Some(Pass {
+            return Ok(Next::Run(Pass {
                 after: r.get(0),
                 until: until
                     .and_then(|u| u.parse().ok())
@@ -63,24 +78,32 @@ async fn prepare(client: &Client, origin: &str) -> Result<Option<Pass>> {
         }
         tracing::warn!("the document pass began more than 72 hours ago; starting it again");
     }
+    let walked: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM sync_state WHERE source = 'relay-walk' AND phase = 'done')",
+            &[],
+        )
+        .await?
+        .get(0);
+    if !walked {
+        return Ok(Next::Wait);
+    }
     let plc: i64 = client
         .query_opt("SELECT cursor FROM sync_state WHERE source = 'plc'", &[])
         .await?
         .map_or(0, |r| r.get(0));
-    // A first sync keeps the parts as it goes.
-    let phase = if plc == 0 { "done" } else { "backfill" };
     let row = client
         .query_one(
             "INSERT INTO sync_state (source, origin, cursor, phase, position, started_at) \
-             VALUES ($1, $2, 0, $3, $4, now()) \
+             VALUES ($1, $2, 0, 'backfill', $3, now()) \
              ON CONFLICT (source) DO UPDATE SET cursor = 0, phase = EXCLUDED.phase, \
                  position = EXCLUDED.position, started_at = EXCLUDED.started_at \
              RETURNING started_at::text",
-            &[&SOURCE, &origin, &phase, &plc.to_string()],
+            &[&SOURCE, &origin, &plc.to_string()],
         )
         .await
         .context("beginning the document pass")?;
-    Ok((plc > 0).then(|| Pass {
+    Ok(Next::Run(Pass {
         after: 0,
         until: plc,
         started: row.get(0),
@@ -118,8 +141,23 @@ async fn apply(client: &mut Client, ops: &[Op], until: i64) -> Result<()> {
     Ok(())
 }
 
+/// How often a pass waiting for the first walk looks again.
+const WAIT_LOOK: Duration = Duration::from_secs(60);
+
 pub async fn run(mut client: Client, opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
-    if let Some(pass) = prepare(&client, &opts.plc_url).await? {
+    let pass = loop {
+        match prepare(&client, &opts.plc_url).await? {
+            Next::Nothing => break None,
+            Next::Run(pass) => break Some(pass),
+            Next::Wait => {
+                tokio::select! {
+                    _ = stop.changed() => return Ok(()),
+                    _ = tokio::time::sleep(WAIT_LOOK) => {}
+                }
+            }
+        }
+    };
+    if let Some(pass) = pass {
         tracing::info!(
             after = pass.after,
             until = pass.until,
@@ -279,21 +317,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_first_sync_has_nothing_to_fill() {
+    async fn a_new_copy_fills_its_parts_after_the_first_walk() {
         let Some(client) = crate::testdb::fresh().await else {
             return;
         };
-        assert!(
-            prepare(&client, "https://plc.example")
-                .await
-                .unwrap()
-                .is_none()
-        );
-        let phase: String = client
-            .query_one("SELECT phase FROM sync_state WHERE source = $1", &[&SOURCE])
+        let next = || async { prepare(&client, "https://plc.example").await.unwrap() };
+        // No walk yet: nothing is known to have a repo, so it waits.
+        assert!(matches!(next().await, Next::Wait));
+        client
+            .batch_execute(
+                "INSERT INTO sync_state (source, origin, cursor, phase) VALUES \
+                 ('plc', 'https://plc.example', 500, 'live'), \
+                 ('relay-walk', 'https://relay.example', 0, 'walking')",
+            )
             .await
-            .unwrap()
-            .get(0);
-        assert_eq!(phase, "done");
+            .unwrap();
+        // A walk under way is not enough.
+        assert!(matches!(next().await, Next::Wait));
+        client
+            .execute(
+                "UPDATE sync_state SET phase = 'done' WHERE source = 'relay-walk'",
+                &[],
+            )
+            .await
+            .unwrap();
+        // Once it is done, the pass covers everything the source has applied.
+        match next().await {
+            Next::Run(pass) => assert_eq!((pass.after, pass.until), (0, 500)),
+            _ => panic!("the pass should run once the walk is done"),
+        }
+        // And, begun, it is found again rather than begun twice.
+        match next().await {
+            Next::Run(pass) => assert_eq!(pass.until, 500),
+            _ => panic!("the pass under way should be found"),
+        }
     }
 }

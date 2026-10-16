@@ -166,8 +166,11 @@ last operation in that range.
   any identity with an operation after the pass's end in the recovery
   window is left alone. Because it relies on that window, a pass that
   began more than 72 hours ago starts again.
-- A copy synced from the start with parts kept has nothing to fill, and
-  the pass marks itself done at once.
+- It begins only once a relay walk has finished. A first sync writes
+  parts as it goes, but it runs before the first walk, when nothing is
+  known to have a repo yet, so the names that are kept only for listed
+  identities have to be filled in afterwards. On a new copy, the pass
+  therefore runs once after the first walk, beside the first sweep.
 
 ## Jetstream
 
