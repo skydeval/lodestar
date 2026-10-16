@@ -198,6 +198,10 @@ Work towards 0.1.0.
   gives them. Labelers' second key and service are the main case;
   names lodestar keeps lowercased or does not keep are the other. In
   the first 50,000 operations, 19 identities of 37,676 have them.
+- Design documentation in `docs/design/`: what lodestar is and leaves
+  out, its roles, sources, data model, handle verification, API,
+  deployment budgets, and the decisions behind them, with the known
+  limitations.
 - A bundled Caddy in `compose.yaml`, off unless the `proxy` profile is
   on, with the public rules in `Caddyfile`: HTTPS on
   `LODESTAR_DOMAIN` for the status page and the reads, and nothing

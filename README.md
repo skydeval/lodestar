@@ -22,6 +22,8 @@ authentication, and nothing public can change anything.
 
 **Status:** 0.1 is in progress. See `CHANGELOG.md`.
 
+How it works, and why: [docs/design](docs/design/README.md).
+
 ## What it needs
 
 - Postgres 16.
