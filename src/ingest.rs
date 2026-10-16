@@ -61,7 +61,13 @@ pub async fn run(opts: Opts) -> Result<()> {
     let mut tasks: JoinSet<(&'static str, Result<()>)> = JoinSet::new();
     let client = db::connect(&opts.database_url).await?;
     let s = either(stop.clone(), halted.clone());
+    let docs = opts.plc.clone();
     tasks.spawn(async move { ("PLC source", plc::sync::run(client, opts.plc, s).await) });
+    // Fills the DID document parts of a copy made before they were kept;
+    // once done, or with nothing to do, it waits for the role to stop.
+    let client = db::connect(&opts.database_url).await?;
+    let s = either(stop.clone(), halted.clone());
+    tasks.spawn(async move { ("document pass", plc::docs::run(client, docs, s).await) });
     if let Some(o) = opts.jetstream {
         // One subscription an instance, each on its own connection.
         for url in o.urls.clone() {

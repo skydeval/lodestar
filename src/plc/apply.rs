@@ -223,6 +223,7 @@ mod tests {
             claim: claim.map(str::to_owned),
             pds: pds.map(str::to_owned),
             key: Some(vec![9]),
+            doc: None,
         }
     }
 

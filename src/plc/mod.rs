@@ -2,6 +2,7 @@
 //! directory's sequenced export.
 
 pub mod apply;
+pub mod docs;
 pub mod op;
 pub mod store;
 pub mod sync;

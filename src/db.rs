@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS plc_recent_ops (
     PRIMARY KEY (did, seq)
 );
 
+-- The DID document parts of the identities whose document the stored
+-- claim, PDS and key cannot rebuild: labelers' second key and service,
+-- for example. As the directory gives them, JSON text. `seq` is the
+-- operation they came from.
+CREATE TABLE IF NOT EXISTS doc_parts (
+    seq bigint NOT NULL,
+    did bytea PRIMARY KEY,
+    doc text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     source text PRIMARY KEY,
     origin text NOT NULL,
@@ -93,6 +103,8 @@ ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS last_op_at timestamptz;
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS lap_started_at timestamptz;
 -- Where a listing walk has got to. A listing's cursor is opaque text.
 ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS position text;
+-- When a one-off pass over a source began.
+ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS started_at timestamptz;
 
 -- The identities known to have a repo: those a relay lists, and those an
 -- active account event names. The sweep checks these first. Kept apart

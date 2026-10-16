@@ -96,7 +96,7 @@ async fn fetch(http: &reqwest::Client, opts: &Opts, after: i64) -> Result<Vec<Op
 /// Fetch pages one after another, up to and including the first short one,
 /// and hand them on. Pages already fetched wait in the channel, so the
 /// next is on its way while one is applied.
-async fn page_loop(
+pub(super) async fn page_loop(
     http: reqwest::Client,
     opts: Opts,
     mut after: i64,

@@ -189,8 +189,26 @@ Work towards 0.1.0.
   the control handles and the domains appear only as counts, so it
   can be made public while the API stays private. Its figures are
   read at most once every 30 seconds, however many people view it.
+- `GET /{did}`: the PLC directory's DID document read, answered in the
+  directory's shape, so anything that reads DID documents from
+  `plc.directory` can read them from lodestar instead. A tombstoned
+  DID is `DID not available`, an unknown one `DID not registered`.
+- `doc_parts`: the DID document parts of the identities whose document
+  the stored claim, PDS and key cannot rebuild, kept as the directory
+  gives them. Labelers' second key and service are the main case;
+  names lodestar keeps lowercased or does not keep are the other. In
+  the first 50,000 operations, 19 identities of 37,676 have them.
+- A one-off pass in the ingest role fills `doc_parts` for a copy made
+  before it was kept: it reads the export from the start up to where
+  the PLC source was when it began, about 9 hours for the whole
+  directory, and never replaces parts the PLC source has written
+  since. A copy synced from the start has nothing to fill.
 
 ### Changed
+
+- Lodestar is described as what it is: a compact, read-only mirror of
+  the PLC directory whose read API is public behind the operator's
+  proxy. Earlier text called it internal, with no public API.
 
 - The mark for an identity that has a repo is a row in its own table,
   `listed`, and no longer a column of `accounts`. Setting the column

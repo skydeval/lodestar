@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use tokio_postgres::{Client, Transaction};
 
 use super::apply::{HistRow, Identity, RecentOp, Status};
-use super::op::Op;
+use super::op::{Kind, Op};
 use crate::queue::{self, Item};
 use crate::{db, encoding, handle};
 
@@ -372,6 +372,7 @@ pub async fn apply_page(
         .await
         .context("inserting recent operations")?;
     }
+    write_docs(&tx, &docs_of(ops, &keyed)).await?;
     // A changed claim is checked ahead of everything else.
     queue::push(&tx, queue::REASON_CLAIM, &claims).await?;
     tx.execute(
@@ -383,6 +384,55 @@ pub async fn apply_page(
     .context("committing the cursor")?;
     tx.commit().await?;
     Ok(stats)
+}
+
+/// Each identity's document parts after a run of operations, with the
+/// operation they came from: its last state or tombstone. A recovery is
+/// itself the newest operation, and an unknown type changes nothing.
+pub(super) fn docs_of<'a>(
+    ops: &'a [Op],
+    keyed: &'a [Vec<u8>],
+) -> HashMap<&'a [u8], (i64, Option<&'a str>)> {
+    let mut docs = HashMap::new();
+    for (op, did) in ops.iter().zip(keyed) {
+        if op.kind != Kind::Other {
+            docs.insert(did.as_slice(), (op.seq, op.doc.as_deref()));
+        }
+    }
+    docs
+}
+
+/// Replace the document parts of every identity in `docs`: none for those
+/// whose stored columns rebuild their document.
+pub(super) async fn write_docs(
+    tx: &Transaction<'_>,
+    docs: &HashMap<&[u8], (i64, Option<&str>)>,
+) -> Result<()> {
+    if docs.is_empty() {
+        return Ok(());
+    }
+    let touched: Vec<&[u8]> = docs.keys().copied().collect();
+    tx.execute("DELETE FROM doc_parts WHERE did = ANY($1)", &[&touched])
+        .await
+        .context("clearing document parts")?;
+    let (mut d, mut s, mut j) = (Vec::new(), Vec::new(), Vec::new());
+    for (did, (seq, doc)) in docs {
+        if let Some(doc) = doc {
+            d.push(*did);
+            s.push(*seq);
+            j.push(*doc);
+        }
+    }
+    if !d.is_empty() {
+        tx.execute(
+            "INSERT INTO doc_parts (seq, did, doc) SELECT s, d, j \
+             FROM UNNEST($1::int8[], $2::bytea[], $3::text[]) AS t(s, d, j)",
+            &[&s, &d, &j],
+        )
+        .await
+        .context("writing document parts")?;
+    }
+    Ok(())
 }
 
 /// Drop operations that have left the recovery window, measured from the

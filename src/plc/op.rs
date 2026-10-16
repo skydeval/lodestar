@@ -1,9 +1,10 @@
 //! One line of the directory's sequenced export, reduced to what lodestar
-//! keeps: the handle claim, the PDS and the signing key.
+//! keeps: the handle claim, the PDS and the signing key, and the DID
+//! document's parts when those three cannot rebuild them.
 
 use anyhow::{Context, Result, anyhow};
 use chrono::DateTime;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{encoding, handle};
 
@@ -31,6 +32,11 @@ pub struct Op {
     pub claim: Option<String>,
     pub pds: Option<String>,
     pub key: Option<Vec<u8>>,
+    /// The DID document's parts as the directory gives them, JSON, when
+    /// the claim, PDS and key cannot rebuild them exactly: more keys or
+    /// services than those, more than one name, or a value lodestar keeps
+    /// in another form. None for most operations.
+    pub doc: Option<String>,
 }
 
 /// Text Postgres can store. JSON may carry a NUL, which it cannot.
@@ -38,11 +44,76 @@ fn storable(s: &str) -> Option<String> {
     (!s.contains('\0')).then(|| s.to_owned())
 }
 
-/// The claim, PDS and key an operation sets.
-fn derive(op: &Value) -> (Kind, Option<String>, Option<String>, Option<Vec<u8>>) {
+/// The DID document parts a stored claim, PDS and key stand for: what an
+/// identity's document shows when it has no parts of its own.
+pub fn rebuilt_parts(claim: Option<&str>, pds: Option<&str>, key: Option<&[u8]>) -> Value {
+    json!({
+        "alsoKnownAs": claim.map(|c| vec![format!("at://{c}")]).unwrap_or_default(),
+        "verificationMethods": match key.and_then(encoding::key_text) {
+            Some(k) => json!({ "atproto": k }),
+            None => json!({}),
+        },
+        "services": match pds {
+            Some(p) => json!({
+                "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": p }
+            }),
+            None => json!({}),
+        },
+    })
+}
+
+/// The parts as given, kept only when the stored columns rebuild
+/// something else.
+fn own_parts(
+    given: Value,
+    claim: Option<&str>,
+    pds: Option<&str>,
+    key: Option<&[u8]>,
+) -> Option<String> {
+    (given != rebuilt_parts(claim, pds, key)).then(|| given.to_string())
+}
+
+/// The directory reads a legacy `create` as an operation with these
+/// parts; its prefixes are added as it adds them.
+fn legacy_parts(op: &Value) -> Value {
+    let field = |name: &str| op.get(name).and_then(Value::as_str).unwrap_or("");
+    let handle = field("handle");
+    let name = if handle.starts_with("at://") {
+        handle.to_owned()
+    } else {
+        format!(
+            "at://{}",
+            handle.replacen("http://", "", 1).replacen("https://", "", 1)
+        )
+    };
+    let service = field("service");
+    let endpoint = if service.starts_with("http://") || service.starts_with("https://") {
+        service.to_owned()
+    } else {
+        format!("https://{service}")
+    };
+    json!({
+        "alsoKnownAs": [name],
+        "verificationMethods": { "atproto": field("signingKey") },
+        "services": {
+            "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": endpoint }
+        },
+    })
+}
+
+type Derived = (
+    Kind,
+    Option<String>,
+    Option<String>,
+    Option<Vec<u8>>,
+    Option<String>,
+);
+
+/// The claim, PDS, key and document parts an operation sets.
+fn derive(op: &Value) -> Derived {
     let text = |v: Option<&Value>| v.and_then(Value::as_str).and_then(storable);
     match op.get("type").and_then(Value::as_str).unwrap_or("") {
-        "plc_tombstone" => (Kind::Tombstone, None, None, None),
+        "plc_tombstone" => (Kind::Tombstone, None, None, None, None),
         "create" => {
             let claim = op
                 .get("handle")
@@ -50,7 +121,13 @@ fn derive(op: &Value) -> (Kind, Option<String>, Option<String>, Option<Vec<u8>>)
                 .and_then(handle::normalize);
             let pds = text(op.get("service"));
             let key = text(op.get("signingKey")).map(|k| encoding::key_bytes(&k));
-            (Kind::State, claim, pds, key)
+            let doc = own_parts(
+                legacy_parts(op),
+                claim.as_deref(),
+                pds.as_deref(),
+                key.as_deref(),
+            );
+            (Kind::State, claim, pds, key, doc)
         }
         "plc_operation" => {
             // The first valid at:// entry is the claim.
@@ -69,9 +146,20 @@ fn derive(op: &Value) -> (Kind, Option<String>, Option<String>, Option<Vec<u8>>)
             });
             let key =
                 text(op.pointer("/verificationMethods/atproto")).map(|k| encoding::key_bytes(&k));
-            (Kind::State, claim, pds, key)
+            let part = |name: &str, empty: Value| op.get(name).cloned().unwrap_or(empty);
+            let doc = own_parts(
+                json!({
+                    "alsoKnownAs": part("alsoKnownAs", json!([])),
+                    "verificationMethods": part("verificationMethods", json!({})),
+                    "services": part("services", json!({})),
+                }),
+                claim.as_deref(),
+                pds.as_deref(),
+                key.as_deref(),
+            );
+            (Kind::State, claim, pds, key, doc)
         }
-        _ => (Kind::Other, None, None, None),
+        _ => (Kind::Other, None, None, None, None),
     }
 }
 
@@ -99,7 +187,7 @@ pub fn parse_line(line: &str) -> Result<Op> {
     if did.contains('\0') {
         return Err(anyhow!("export line has a NUL in its did"));
     }
-    let (kind, claim, pds, key) = derive(op);
+    let (kind, claim, pds, key, doc) = derive(op);
     Ok(Op {
         did: did.to_owned(),
         seq,
@@ -114,6 +202,7 @@ pub fn parse_line(line: &str) -> Result<Op> {
         claim,
         pds,
         key,
+        doc,
     })
 }
 
@@ -178,6 +267,65 @@ mod tests {
         assert_eq!(op.seq, 7);
         assert!(parse_line("not json").is_err());
         assert!(parse_line(r#"{"did":"did:plc:x"}"#).is_err());
+    }
+
+    #[test]
+    fn document_parts_are_kept_only_when_the_columns_cannot_rebuild_them() {
+        let key = "did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF";
+        // An ordinary account: rebuilt from its claim, PDS and key.
+        let plain = format!(
+            r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":["at://alice.example.com"],"rotationKeys":["{key}"],"services":{{"atproto_pds":{{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}}}},"verificationMethods":{{"atproto":"{key}"}}}}"#
+        );
+        assert_eq!(parse_line(&line(&plain)).unwrap().doc, None);
+        // A labeler: a second key and a second service.
+        let labeler = format!(
+            r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":["at://mod.example.com"],"services":{{"atproto_pds":{{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"atproto_labeler":{{"type":"AtprotoLabeler","endpoint":"https://mod.example.com"}}}},"verificationMethods":{{"atproto":"{key}","atproto_label":"{key}"}}}}"#
+        );
+        let op = parse_line(&line(&labeler)).unwrap();
+        assert_eq!(op.pds.as_deref(), Some("https://pds.example.com"));
+        let doc: Value = serde_json::from_str(op.doc.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            doc["services"]["atproto_labeler"]["endpoint"],
+            "https://mod.example.com"
+        );
+        assert_eq!(doc["verificationMethods"]["atproto_label"], key);
+        assert_eq!(doc["alsoKnownAs"], json!(["at://mod.example.com"]));
+        // A name kept in another form, and more than one name.
+        for aka in [
+            r#"["at://Alice.Example.com"]"#,
+            r#"["at://alice.example.com","https://alice.example.com"]"#,
+            r#"["at://nodot"]"#,
+        ] {
+            let op = parse_line(&line(&format!(
+                r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":{aka},"services":{{}},"verificationMethods":{{}}}}"#
+            )))
+            .unwrap();
+            let doc: Value = serde_json::from_str(op.doc.as_deref().expect(aka)).unwrap();
+            assert_eq!(doc["alsoKnownAs"], serde_json::from_str::<Value>(aka).unwrap());
+        }
+        // A legacy create as the directory reads it.
+        let create = format!(
+            r#"{{"type":"create","prev":null,"handle":"old.example.com","service":"https://pds.example.com","signingKey":"{key}","recoveryKey":"{key}"}}"#
+        );
+        assert_eq!(parse_line(&line(&create)).unwrap().doc, None);
+        let create = format!(
+            r#"{{"type":"create","prev":null,"handle":"Old.Example.com","service":"pds.example.com","signingKey":"{key}","recoveryKey":"{key}"}}"#
+        );
+        let doc: Value =
+            serde_json::from_str(parse_line(&line(&create)).unwrap().doc.as_deref().unwrap())
+                .unwrap();
+        assert_eq!(doc["alsoKnownAs"], json!(["at://Old.Example.com"]));
+        assert_eq!(
+            doc["services"]["atproto_pds"]["endpoint"],
+            "https://pds.example.com"
+        );
+        // Tombstones and unknown types have no parts.
+        assert_eq!(
+            parse_line(&line(r#"{"type":"plc_tombstone","prev":"zabc"}"#))
+                .unwrap()
+                .doc,
+            None
+        );
     }
 
     #[test]

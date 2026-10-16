@@ -1,8 +1,9 @@
 # lodestar
 
-An identity index for the ATProto network. Lodestar keeps a local
-copy of who every account is, so that other services can ask it
-instead of asking the network each time:
+A compact, read-only mirror of the PLC directory, small enough for a
+75 GB VPS. Lodestar keeps a copy of who every account on the ATProto
+network is, so that services near it can ask it instead of asking
+`plc.directory` and the network each time:
 
 - where an account lives (its PDS),
 - what key signs its data,
@@ -11,9 +12,13 @@ instead of asking the network each time:
 
 It mirrors the PLC directory for `did:plc` identities, finds
 `did:web` accounts through Jetstream and a relay's listing, and
-verifies every handle itself. It is internal infrastructure: there
-is no authentication, and it is meant to be reached over a private
-network.
+verifies every handle itself. It keeps each identity's current state
+and history, not the signed operations, which is what keeps it
+small; it never writes to the directory.
+
+The read API is meant to be public, behind a reverse proxy that
+passes only the read paths (see [API](#api)). There is no
+authentication, and nothing public can change anything.
 
 **Status:** 0.1 is in progress. See `CHANGELOG.md`.
 
@@ -127,6 +132,7 @@ when its rates could pass 1,400.
 | `GET /account/{did}/history` | handle-claim and PDS changes, newest first |
 | `POST /accounts` | the same as the first, for up to 1,000 DIDs: `{"dids": [...]}` |
 | `GET /handle/{handle}` | the DID that holds a verified handle |
+| `GET /{did}` | a `did:plc`'s DID document, as `plc.directory` gives it |
 | `POST /account/{did}/refresh` | re-fetches a `did:web` document and re-checks the handle |
 | `GET /ops/health` | sync position, verification, storage |
 | `GET /ops/metrics` | the same, in Prometheus format |

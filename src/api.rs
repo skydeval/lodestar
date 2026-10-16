@@ -1,5 +1,6 @@
 //! The API role: reads over what the other roles have stored. HTTP and
-//! JSON, for consumers on a private network. It makes no outbound request.
+//! JSON, public behind the operator's proxy, which passes only the read
+//! paths. It makes no outbound request.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +20,7 @@ use tokio_postgres::{Client, Row};
 use crate::verify::requests;
 use crate::{db, encoding, handle, queue};
 
+mod doc;
 mod status;
 pub use status::Opts as StatusOpts;
 
@@ -865,6 +867,8 @@ pub async fn run(opts: Opts) -> Result<()> {
         .route("/account/{did}/refresh", post(post_refresh))
         .route("/accounts", post(post_accounts))
         .route("/handle/{handle}", get(get_handle))
+        // The directory's own read, for anything that speaks to it.
+        .route("/{did}", get(doc::get_document))
         .route("/ops/health", get(get_health))
         .route("/ops/metrics", get(get_metrics))
         .with_state(app);
