@@ -138,6 +138,7 @@ function render(d) {
     ["unresolved", "Points nowhere", "var(--bar-2)"],
     ["unreachable", "Unreachable", "var(--bad)"],
     ["pending", "Not yet checked", "var(--line)"],
+    ["shared", "Claim a shared handle", "var(--muted)"],
   ];
   const checked = parts.reduce((a, [k]) => a + (by[k] || 0), 0);
   $("verified").textContent = by.verified !== undefined ? fmt(by.verified) + " verified" : "counting…";
@@ -146,7 +147,7 @@ function render(d) {
   $("status-legend").innerHTML = parts.filter(([k]) => by[k]).map(([k, label, c]) =>
     `<span><b style="background:${c}"></b>${label} ${fmt(by[k])}</span>`).join("");
   $("totals-note").textContent = t.counted_at
-    ? "Active accounts with a handle claim. Counted " + ago(t.counted_at, now) + "; accounts sharing a handle claimed by very many take its status."
+    ? "Active accounts with a handle claim. Counted " + ago(t.counted_at, now) + ". A handle claimed by very many accounts, as in a spam wave, is checked once for all of them; those accounts are counted apart."
     : "The first count is running.";
 
   // The weekly sweep.

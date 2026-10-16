@@ -46,9 +46,16 @@ async fn count_totals(client: &mut tokio_postgres::Client) -> Result<Value> {
     let tx = client.transaction().await?;
     tx.batch_execute("SET LOCAL max_parallel_workers_per_gather = 0")
         .await?;
+    // An account claiming a shared handle is never checked on its own; the
+    // handle is resolved once for all its claimants, so the account's own
+    // status says nothing. Such accounts are counted apart, all but the one
+    // the handle resolves to.
     let rows = tx
         .query(
-            "SELECT handle_status, count(*) FROM accounts WHERE status = 0 GROUP BY 1",
+            "SELECT a.handle_status, s.handle IS NOT NULL, count(*) \
+             FROM accounts a LEFT JOIN shared_handles s \
+               ON s.handle = a.handle_claim AND s.did IS DISTINCT FROM a.did \
+             WHERE a.status = 0 GROUP BY 1, 2",
             &[],
         )
         .await
@@ -71,15 +78,20 @@ async fn count_totals(client: &mut tokio_postgres::Client) -> Result<Value> {
     tx.commit().await?;
     let mut by_status = serde_json::Map::new();
     for r in rows {
-        let name = match r.get::<_, i16>(0) {
-            0 => "verified",
-            1 => "mismatch",
-            2 => "unresolved",
-            3 => "unreachable",
-            4 => "pending",
-            _ => "none",
+        let name = if r.get::<_, bool>(1) {
+            "shared"
+        } else {
+            match r.get::<_, i16>(0) {
+                0 => "verified",
+                1 => "mismatch",
+                2 => "unresolved",
+                3 => "unreachable",
+                4 => "pending",
+                _ => "none",
+            }
         };
-        by_status.insert(name.to_owned(), json!(r.get::<_, i64>(1)));
+        let n = r.get::<_, i64>(2) + by_status.get(name).and_then(Value::as_i64).unwrap_or(0);
+        by_status.insert(name.to_owned(), json!(n));
     }
     Ok(json!({
         "counted_at": at,
@@ -291,5 +303,34 @@ mod tests {
         assert_eq!(v["worker"]["domains_paused_failing"], json!(1));
         assert_eq!(v["worker"]["in_flight"], json!(3));
         assert!(!v.to_string().contains(".example"));
+    }
+
+    #[tokio::test]
+    async fn shared_claimants_are_counted_apart() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        // 1 and 2 claim a shared handle that resolves to 3; 3 holds it.
+        // 4 is pending on a handle of its own, 5 is verified, 6 is
+        // tombstoned and claims the shared handle.
+        client
+            .batch_execute(
+                "INSERT INTO accounts (created_at, method, status, handle_status, did, handle_claim) VALUES \
+                 (now(), 0, 0, 4, '\\x01', 'wave.example'), \
+                 (now(), 0, 0, 4, '\\x02', 'wave.example'), \
+                 (now(), 0, 0, 0, '\\x03', 'wave.example'), \
+                 (now(), 0, 0, 4, '\\x04', 'own.example'), \
+                 (now(), 0, 0, 0, '\\x05', 'five.example'), \
+                 (now(), 0, 1, 4, '\\x06', 'wave.example'); \
+                 INSERT INTO shared_handles (outcome, handle, did) VALUES (0, 'wave.example', '\\x03');",
+            )
+            .await
+            .unwrap();
+        let t = count_totals(&mut client).await.unwrap();
+        assert_eq!(
+            t["active_by_handle_status"],
+            json!({"shared": 2, "pending": 1, "verified": 2})
+        );
+        assert_eq!(t["identities"], json!(6));
     }
 }
