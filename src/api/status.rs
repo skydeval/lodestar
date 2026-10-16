@@ -1,10 +1,11 @@
 //! The status page: a read-only page and the aggregate figures it shows,
 //! served on an address of its own, apart from the API. It serves nothing
 //! else, and names nothing an operator may not want public: the control
-//! handles appear only as a count. Off unless an address is given.
+//! handles and the domains appear only as counts. Off unless an address
+//! is given.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -13,11 +14,15 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use super::{App, TS, source, verification};
 
 const PAGE: &str = include_str!("status.html");
+
+/// How long one reading of the figures is served to every request, so
+/// the page's load on the database does not grow with its viewers.
+const FIGURES_FOR: Duration = Duration::from_secs(30);
 
 pub struct Opts {
     pub database_url: String,
@@ -31,6 +36,8 @@ struct Status {
     app: Arc<App>,
     /// The last totals and when they were counted.
     totals: RwLock<Value>,
+    /// The last figures served, as sent, and when they were read.
+    figures: Mutex<Option<(Instant, String)>>,
 }
 
 /// Count handle statuses over all of `accounts`, gently: one process, no
@@ -82,12 +89,9 @@ async fn count_totals(client: &mut tokio_postgres::Client) -> Result<Value> {
     }))
 }
 
-/// The figures the page shows. Built from what `/ops/health` reports,
-/// with the control handles reduced to counts.
-async fn figures(status: &Status) -> Result<Value> {
-    let app = &status.app;
-    let (src, live) = source(app).await?;
-    let mut v = verification(app).await?;
+/// What `/ops/health` reports about verification, with every name taken
+/// out: the control handles and each list of domains become counts.
+fn public_verification(mut v: Value) -> Value {
     let controls = v["controls"].as_array().cloned().unwrap_or_default();
     let counted = controls
         .iter()
@@ -98,6 +102,38 @@ async fn figures(status: &Status) -> Result<Value> {
         .filter(|c| c["left_out"] != json!(true) && c["passed_last_round"] == json!(true))
         .count();
     v["controls"] = json!({ "counted": counted, "passing": passing });
+    let pauses = v["pauses"].as_array().cloned().unwrap_or_default();
+    let paused = |kind: &str| {
+        pauses
+            .iter()
+            .filter(|p| {
+                p["state"] == json!("paused")
+                    && p["pause"].as_str().is_some_and(|s| s.starts_with(kind))
+            })
+            .count()
+    };
+    v["pauses"] = json!({
+        "not_answering": paused("pause2:"),
+        "answers_look_wrong": paused("pause3:"),
+    });
+    if let Some(worker) = v["worker"].as_object_mut() {
+        for (key, value) in worker.iter_mut() {
+            if key.starts_with("domains_")
+                && let Some(n) = value.as_array().map(Vec::len)
+            {
+                *value = json!(n);
+            }
+        }
+    }
+    v
+}
+
+/// The figures the page shows. Built from what `/ops/health` reports,
+/// with the names taken out.
+async fn figures(status: &Status) -> Result<Value> {
+    let app = &status.app;
+    let (src, live) = source(app).await?;
+    let v = public_verification(verification(app).await?);
     let db = app.db();
     let streams: Vec<Value> = db
         .query(
@@ -154,26 +190,39 @@ async fn page() -> Response {
 }
 
 async fn data(State(status): State<Arc<Status>>) -> Response {
-    match figures(&status).await {
-        Ok(v) => (
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            v.to_string(),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::warn!("status figures: {e:#}");
-            (StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response()
-        }
-    }
+    // One request at a time reads the database; the rest wait for it and
+    // are given what it read.
+    let mut cached = status.figures.lock().await;
+    let body = match cached.as_ref() {
+        Some((at, body)) if at.elapsed() < FIGURES_FOR => body.clone(),
+        _ => match figures(&status).await {
+            Ok(v) => {
+                let body = v.to_string();
+                *cached = Some((Instant::now(), body.clone()));
+                body
+            }
+            Err(e) => {
+                tracing::warn!("status figures: {e:#}");
+                return (StatusCode::SERVICE_UNAVAILABLE, "unavailable").into_response();
+            }
+        },
+    };
+    drop(cached);
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 pub async fn run(app: Arc<App>, opts: Opts) -> Result<()> {
     let status = Arc::new(Status {
         app,
         totals: RwLock::new(Value::Null),
+        figures: Mutex::new(None),
     });
     // The totals are counted in the background, never for a request.
     let counting = status.clone();
@@ -208,4 +257,39 @@ pub async fn run(app: Arc<App>, opts: Opts) -> Result<()> {
         .await
         .context("serving the status page")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_names_reach_the_page() {
+        let v = public_verification(json!({
+            "controls": [
+                {"handle": "a.example", "left_out": false, "passed_last_round": true},
+                {"handle": "b.example", "left_out": false, "passed_last_round": false},
+                {"handle": "c.example", "left_out": true, "passed_last_round": false},
+            ],
+            "pauses": [
+                {"pause": "pause2:d.example", "state": "paused"},
+                {"pause": "pause2:e.example", "state": "released"},
+                {"pause": "pause3:f.example", "state": "paused"},
+            ],
+            "worker": {
+                "domains_climbed": [["g.example", 2.0], ["h.example", 1.5]],
+                "domains_paused_failing": ["d.example"],
+                "in_flight": 3,
+            },
+        }));
+        assert_eq!(v["controls"], json!({"counted": 2, "passing": 1}));
+        assert_eq!(
+            v["pauses"],
+            json!({"not_answering": 1, "answers_look_wrong": 1})
+        );
+        assert_eq!(v["worker"]["domains_climbed"], json!(2));
+        assert_eq!(v["worker"]["domains_paused_failing"], json!(1));
+        assert_eq!(v["worker"]["in_flight"], json!(3));
+        assert!(!v.to_string().contains(".example"));
+    }
 }

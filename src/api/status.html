@@ -85,7 +85,6 @@
     <section class="card">
       <h2>Domains</h2>
       <div id="domain-rows"></div>
-      <ul class="tags" id="climbed"></ul>
     </section>
   </div>
 </main>
@@ -195,17 +194,15 @@ function render(d) {
     return row("Jetstream " + name, (s.current ? dot("good") + "live" : dot("warn") + "last " + ago(s.at, now)));
   }).join("") + row("Database", bytes(d.database_bytes));
 
-  // Domains held back, and the ones answering fast.
-  const pauses = v.pauses || [];
-  const failing = pauses.filter((x) => x.pause.startsWith("pause2:") && x.state === "paused").length;
-  const nothing = pauses.filter((x) => x.pause.startsWith("pause3:") && x.state === "paused").length;
+  // Domains held back, and the ones answering fast, as counts.
+  const p = v.pauses || {};
+  const failing = p.not_answering || 0;
+  const nothing = p.answers_look_wrong || 0;
   $("domain-rows").innerHTML =
     row("Paused, not answering", fmt(failing), failing ? "warn" : "") +
     row("Paused, answers look wrong", fmt(nothing), nothing ? "bad" : "") +
     row("Shared handles", fmt(v.shared_handles)) +
-    row("Running faster than 1/s", fmt((w.domains_climbed || []).length));
-  $("climbed").innerHTML = (w.domains_climbed || []).slice(0, 12)
-    .map(([name, r]) => `<li>${name} · ${r}/s</li>`).join("");
+    row("Running faster than 1/s", fmt(w.domains_climbed || 0));
 }
 
 async function tick() {
