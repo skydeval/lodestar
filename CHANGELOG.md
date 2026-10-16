@@ -198,6 +198,11 @@ Work towards 0.1.0.
   gives them. Labelers' second key and service are the main case;
   names lodestar keeps lowercased or does not keep are the other. In
   the first 50,000 operations, 19 identities of 37,676 have them.
+- A bundled Caddy in `compose.yaml`, off unless the `proxy` profile is
+  on, with the public rules in `Caddyfile`: HTTPS on
+  `LODESTAR_DOMAIN` for the status page and the reads, and nothing
+  else. A host with a proxy of its own copies the rules instead; the
+  README says how.
 - A one-off pass in the ingest role fills `doc_parts` for a copy made
   before it was kept: it reads the export from the start up to where
   the PLC source was when it began, about 9 hours for the whole

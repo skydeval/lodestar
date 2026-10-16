@@ -4,3 +4,4 @@ docs/internal/
 .git/
 target/
 .env
+certs/

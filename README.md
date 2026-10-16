@@ -17,7 +17,7 @@ and history, not the signed operations, which is what keeps it
 small; it never writes to the directory.
 
 The read API is meant to be public, behind a reverse proxy that
-passes only the read paths (see [API](#api)). There is no
+passes only the read paths (see [Going public](#going-public)). There is no
 authentication, and nothing public can change anything.
 
 **Status:** 0.1 is in progress. See `CHANGELOG.md`.
@@ -139,8 +139,31 @@ when its rates could pass 1,400.
 
 The status page, when `LODESTAR_STATUS_LISTEN` turns it on, is on an
 address of its own and serves only `GET /status/` and its figures at
-`GET /status/data.json`. It names no control handle, so it can be
-made public while the API stays private.
+`GET /status/data.json`. It names nothing private.
+
+## Going public
+
+The API and status page listen on the host's loopback. The public
+reaches them through a proxy that passes only the status page and
+the reads above; `/ops/*` and the refresh request stay unreachable.
+[Caddyfile](Caddyfile) holds those rules.
+
+**On a host of its own**, use the bundled Caddy:
+
+1. Point your domain at the host (A, and AAAA for IPv6). Behind
+   Cloudflare's proxy, either use "DNS only" or give Caddy a
+   certificate of your own (see Caddyfile's `tls` line).
+2. Open ports 80 and 443.
+3. In `.env`: `COMPOSE_PROFILES=proxy`,
+   `LODESTAR_DOMAIN=lodestar.example.com`, and
+   `LODESTAR_STATUS_LISTEN=0.0.0.0:8090` for the status page.
+4. `docker compose up -d`. Caddy fetches its certificate within a
+   minute and renews it itself.
+
+**On a host that already runs a proxy** (one shared with a PDS, say),
+leave the profile off and copy Caddyfile's rules into that proxy, with
+`127.0.0.1:8080` and `127.0.0.1:8090` in place of `api:8080` and
+`api:8090`.
 
 A handle is reported as an account's `handle` only when lodestar
 has verified it: the account claims the handle, and the handle

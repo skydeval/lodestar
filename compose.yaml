@@ -1,8 +1,9 @@
 # Lodestar and its database. Copy .env.example to .env and fill it in.
 #
 # Each role is its own container, from the same image. The API role makes
-# no outbound request and is the only one consumers reach. The
-# verification role is the only one that asks arbitrary hosts.
+# no outbound request and is the only one consumers reach, through Caddy
+# or a proxy of the host's own. The verification role is the only one
+# that asks arbitrary hosts.
 
 x-lodestar: &lodestar
   # The released image. `docker compose build` builds the same thing
@@ -81,13 +82,36 @@ services:
   api:
     <<: *lodestar
     command: ["api", "--listen", "0.0.0.0:8080"]
-    # Internal only: there is no authentication. Reach it over a private
-    # network, or change this to an address on one.
+    # On the host's loopback only: the public reaches the API through a
+    # proxy that passes the read paths alone (Caddyfile), never `/ops/*`.
     ports:
       - "${LODESTAR_API_BIND:-127.0.0.1:8080}:8080"
-      # The status page, when LODESTAR_STATUS_LISTEN turns it on. It
-      # serves only the page and its figures, so it can be made public.
+      # The status page, when LODESTAR_STATUS_LISTEN turns it on.
       - "${LODESTAR_STATUS_BIND:-127.0.0.1:8090}:8090"
+
+  # HTTPS for the status page and the read API, and nothing else; the
+  # rules are in Caddyfile. Off unless the `proxy` profile is on
+  # (COMPOSE_PROFILES=proxy in .env). A host that already runs a proxy,
+  # such as one shared with a PDS, leaves it off and copies the rules.
+  caddy:
+    image: caddy:2
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      LODESTAR_DOMAIN: ${LODESTAR_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
