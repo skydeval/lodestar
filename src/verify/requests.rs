@@ -150,11 +150,14 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
             Outcome::Nothing => Answer::Nothing,
             Outcome::Inconclusive(_) => Answer::Failed,
         };
-        let changes = shared
-            .pauses
-            .lock()
-            .expect("pauses lock")
-            .record(&domain, Kind::First, false, answer, true, at);
+        let changes = shared.pauses.lock().expect("pauses lock").record(
+            &domain,
+            Kind::First,
+            false,
+            answer,
+            true,
+            at,
+        );
         super::worker::save_changes(&*shared.db().lock().await, &changes).await?;
     }
     let did_text = match &found.outcome {

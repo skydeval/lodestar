@@ -100,7 +100,9 @@ fn legacy_parts(op: &Value) -> Value {
     } else {
         format!(
             "at://{}",
-            handle.replacen("http://", "", 1).replacen("https://", "", 1)
+            handle
+                .replacen("http://", "", 1)
+                .replacen("https://", "", 1)
         )
     };
     let service = field("service");
@@ -322,7 +324,10 @@ mod tests {
             let parts = op.doc.expect(aka);
             assert!(parts.names_only, "{aka}");
             let doc: Value = serde_json::from_str(&parts.json).unwrap();
-            assert_eq!(doc["alsoKnownAs"], serde_json::from_str::<Value>(aka).unwrap());
+            assert_eq!(
+                doc["alsoKnownAs"],
+                serde_json::from_str::<Value>(aka).unwrap()
+            );
         }
         // A legacy create as the directory reads it.
         let create = format!(

@@ -28,7 +28,12 @@ case "${1:-test}" in
         exit "$status"
         ;;
     clippy)
-        # As CI runs it: the newest stable toolchain, warnings refused.
+        # As CI runs it: formatting first, then the newest stable
+        # toolchain with warnings refused.
+        if ! cargo +stable fmt --check; then
+            echo "not formatted: run cargo fmt"
+            exit 1
+        fi
         cargo +stable clippy --locked --all-targets -- -D warnings 2>&1 | tail -n 80
         exit "${PIPESTATUS[0]}"
         ;;

@@ -77,10 +77,7 @@ fn message(code: StatusCode, text: String) -> Response {
         .into_response()
 }
 
-pub(super) async fn get_document(
-    State(app): State<Arc<App>>,
-    Path(did): Path<String>,
-) -> Response {
+pub(super) async fn get_document(State(app): State<Arc<App>>, Path(did): Path<String>) -> Response {
     match answer(&app, &did).await {
         Ok(r) => r,
         Err(e) => {

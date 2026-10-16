@@ -230,13 +230,9 @@ mod tests {
             .collect();
         assert_eq!(rows, vec![encoding::did_bytes(a)]);
         // A later operation in the pass that needs no parts removes them.
-        apply(
-            &mut client,
-            &[parse_line(&line(a, 3, PLAIN)).unwrap()],
-            10,
-        )
-        .await
-        .unwrap();
+        apply(&mut client, &[parse_line(&line(a, 3, PLAIN)).unwrap()], 10)
+            .await
+            .unwrap();
         let n: i64 = client
             .query_one("SELECT count(*) FROM doc_parts", &[])
             .await
@@ -287,12 +283,14 @@ mod tests {
         let Some(client) = crate::testdb::fresh().await else {
             return;
         };
-        assert!(prepare(&client, "https://plc.example").await.unwrap().is_none());
+        assert!(
+            prepare(&client, "https://plc.example")
+                .await
+                .unwrap()
+                .is_none()
+        );
         let phase: String = client
-            .query_one(
-                "SELECT phase FROM sync_state WHERE source = $1",
-                &[&SOURCE],
-            )
+            .query_one("SELECT phase FROM sync_state WHERE source = $1", &[&SOURCE])
             .await
             .unwrap()
             .get(0);
