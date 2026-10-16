@@ -287,6 +287,10 @@ Work towards 0.1.0.
   reference host's disk. Parts that differ only in their names are now
   kept only for identities with a repo; extra keys and services are
   kept for all. The document pass runs again under the new rule.
+- On a new copy, a second Jetstream subscription took the first one's
+  placeholder position of 0 as a real time, and was refused for ever.
+  A subscription that has seen no event now has no position, and a
+  refused position is treated as lost.
 - On a new copy the document pass was marked done at the start, but the
   first sync runs before the first walk, when nothing is listed, so
   listed accounts whose names differ never got their parts. The pass

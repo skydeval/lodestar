@@ -333,6 +333,12 @@ async fn session(
                 // is too old is answered with a notice instead.
                 return Ok(End::Lost("CursorTooOld".into()));
             }
+            // Any other refusal of the request itself, with a position in
+            // it, is a refusal of the position: asking again with it can
+            // never work. A server error is worth another try.
+            if position.is_some() && resp.status().is_client_error() {
+                return Ok(End::Lost(format!("refused with {}", resp.status())));
+            }
             return Ok(End::Again(format!("refused with {}", resp.status())));
         }
         Ok(Err(e)) => return Ok(End::Again(e.to_string())),
@@ -413,10 +419,13 @@ async fn session(
 /// Where a subscription starts: its own stored position, or, the first
 /// time, the newest position any subscription has, including the single
 /// one of earlier versions. None starts at the tip.
+///
+/// A subscription that has seen no event yet stores 0, which is no
+/// position at all: it is never taken as one, its own or another's.
 async fn starting_position(client: &Client, source: &str) -> Result<Option<i64>> {
     if let Some(r) = client
         .query_opt(
-            "SELECT cursor FROM sync_state WHERE source = $1",
+            "SELECT cursor FROM sync_state WHERE source = $1 AND cursor > 0",
             &[&source],
         )
         .await?
@@ -426,7 +435,7 @@ async fn starting_position(client: &Client, source: &str) -> Result<Option<i64>>
     let newest: Option<i64> = client
         .query_one(
             "SELECT max(t) FROM ( \
-                 SELECT cursor AS t FROM sync_state WHERE source LIKE $1 \
+                 SELECT cursor AS t FROM sync_state WHERE source LIKE $1 AND cursor > 0 \
                  UNION ALL \
                  SELECT (extract(epoch FROM tip_at) * 1000000)::bigint FROM sync_state WHERE source = $2) x",
             &[&format!("{SOURCE_PREFIX}%"), &OLD_SOURCE],
@@ -556,6 +565,46 @@ mod tests {
         let u = url("wss://example.org", Some(1_000_000_000));
         assert!(u.ends_with("&cursor=970000000"), "{u}");
         assert!(!url("wss://example.org", None).contains("cursor"));
+    }
+
+    #[tokio::test]
+    async fn a_subscription_that_has_seen_nothing_has_no_position() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let opts = Opts {
+            urls: vec![],
+            user_agent: String::new(),
+            quiet: Duration::from_secs(60),
+            event_cap: 100,
+        };
+        let east = Sub {
+            opts: &opts,
+            url: "wss://east.example",
+            source: source_of("wss://east.example"),
+        };
+        let west = source_of("wss://west.example");
+        // On a new copy, east starts at the tip and records its run before
+        // any event: that stores 0, which west must not take as a time.
+        begin_run(&client, &east, None).await.unwrap();
+        assert_eq!(starting_position(&client, &west).await.unwrap(), None);
+        // Nor east itself, restarting before its first event.
+        assert_eq!(
+            starting_position(&client, &east.source).await.unwrap(),
+            None
+        );
+        // Once east has a real position, west starts from it.
+        client
+            .execute(
+                "UPDATE sync_state SET cursor = 1792182218789268 WHERE source = $1",
+                &[&east.source],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            starting_position(&client, &west).await.unwrap(),
+            Some(1792182218789268)
+        );
     }
 
     #[tokio::test]
