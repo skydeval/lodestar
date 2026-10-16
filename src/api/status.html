@@ -195,9 +195,9 @@ function render(d) {
   }).join("") + row("Database", bytes(d.database_bytes));
 
   // Domains held back, and the ones answering fast, as counts.
-  const p = v.pauses || {};
-  const failing = p.not_answering || 0;
-  const nothing = p.answers_look_wrong || 0;
+  const paused = v.pauses || {};
+  const failing = paused.not_answering || 0;
+  const nothing = paused.answers_look_wrong || 0;
   $("domain-rows").innerHTML =
     row("Paused, not answering", fmt(failing), failing ? "warn" : "") +
     row("Paused, answers look wrong", fmt(nothing), nothing ? "bad" : "") +
