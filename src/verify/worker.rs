@@ -585,6 +585,17 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             "the domains with rates of their own take the whole global rate while they are swept; every other domain gets the default rate's worth"
         );
     }
+    // A check asks up to three DNS questions: the TXT record, then A and
+    // AAAA for the HTTPS method. Public resolvers serve one address about
+    // 1,500 queries a second and drop the rest, which reads as timeouts.
+    let dns_peak = limits.global_rate * 3.0;
+    if dns_peak > 1400.0 {
+        tracing::warn!(
+            global = limits.global_rate,
+            dns_peak,
+            "the global rate can ask more than 1,400 DNS queries a second; a public resolver may drop some, and each drop is an inconclusive check"
+        );
+    }
     let caps: HashMap<String, usize> = limits
         .overrides
         .iter()

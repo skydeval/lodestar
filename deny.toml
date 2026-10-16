@@ -13,18 +13,7 @@ targets = [
 version = 2
 # A yanked version in Cargo.lock fails the check, like a vulnerability.
 yanked = "deny"
-ignore = [
-    # hickory-proto 0.25: a loop in NSEC3 proof validation. Lodestar
-    # builds the resolver without DNSSEC validation, so that code is
-    # not compiled in.
-    { id = "RUSTSEC-2026-0118", reason = "DNSSEC validation is not enabled" },
-    # hickory-proto 0.25: slow name compression when encoding a message
-    # with many records. Lodestar encodes only its own one-question
-    # queries; it never encodes a message someone else supplied.
-    # Fixed in 0.26.1; remove this with the move to hickory-resolver
-    # 0.26.
-    { id = "RUSTSEC-2026-0119", reason = "only one-question queries are encoded" },
-]
+ignore = []
 
 [licenses]
 version = 2

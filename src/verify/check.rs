@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hickory_resolver::TokioResolver;
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig};
-use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RData;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 /// What a check found.
@@ -110,24 +111,34 @@ pub fn build_resolver(spec: &str, limits: &Limits) -> Result<TokioResolver> {
     let mut builder = if spec == "system" {
         TokioResolver::builder_tokio().context("reading the system resolver's configuration")?
     } else {
-        let addr: SocketAddr = match spec.parse::<SocketAddr>() {
-            Ok(a) => a,
-            Err(_) => SocketAddr::new(
-                spec.parse::<IpAddr>()
-                    .with_context(|| format!("bad resolver address {spec}"))?,
-                53,
-            ),
-        };
-        let group = NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
+        // One or more resolvers, comma-separated, each an address with an
+        // optional port. They are asked in turn when one fails.
+        let mut servers = Vec::new();
+        for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let addr: SocketAddr = match part.parse::<SocketAddr>() {
+                Ok(a) => a,
+                Err(_) => SocketAddr::new(
+                    part.parse::<IpAddr>()
+                        .with_context(|| format!("bad resolver address {part}"))?,
+                    53,
+                ),
+            };
+            let mut server = NameServerConfig::udp_and_tcp(addr.ip());
+            for c in &mut server.connections {
+                c.port = addr.port();
+            }
+            servers.push(server);
+        }
+        anyhow::ensure!(!servers.is_empty(), "no resolver address in {spec:?}");
         TokioResolver::builder_with_config(
-            ResolverConfig::from_parts(None, vec![], group),
-            TokioConnectionProvider::default(),
+            ResolverConfig::from_name_servers(servers),
+            TokioRuntimeProvider::default(),
         )
     };
     let o = builder.options_mut();
     o.timeout = limits.dns;
     o.attempts = 1;
-    Ok(builder.build())
+    builder.build().context("building the resolver")
 }
 
 enum NoAddress {
@@ -142,14 +153,28 @@ enum NoAddress {
 async fn addresses(resolver: &TokioResolver, host: &str) -> Result<Vec<IpAddr>, NoAddress> {
     let name = format!("{}.", host.trim_end_matches('.'));
     let mut found: Vec<IpAddr> = match resolver.ipv4_lookup(name.as_str()).await {
-        Ok(l) => l.iter().map(|a| IpAddr::V4(a.0)).collect(),
+        Ok(l) => l
+            .answers()
+            .iter()
+            .filter_map(|r| match &r.data {
+                RData::A(a) => Some(IpAddr::V4(a.0)),
+                _ => None,
+            })
+            .collect(),
         Err(e) if e.is_nx_domain() => return Err(NoAddress::Nothing),
         Err(e) if e.is_no_records_found() => Vec::new(),
         Err(_) => return Err(NoAddress::Failed),
     };
     if found.is_empty() {
         found = match resolver.ipv6_lookup(name.as_str()).await {
-            Ok(l) => l.iter().map(|a| IpAddr::V6(a.0)).collect(),
+            Ok(l) => l
+                .answers()
+                .iter()
+                .filter_map(|r| match &r.data {
+                    RData::AAAA(a) => Some(IpAddr::V6(a.0)),
+                    _ => None,
+                })
+                .collect(),
             Err(e) if e.is_nx_domain() || e.is_no_records_found() => {
                 return Err(NoAddress::Nothing);
             }
@@ -294,15 +319,19 @@ impl Checker {
             {
                 Ok(found) => {
                     let records: Vec<String> = found
+                        .answers()
                         .iter()
-                        .map(|t| {
-                            String::from_utf8_lossy(
-                                &t.txt_data()
-                                    .iter()
-                                    .flat_map(|p| p.iter().copied())
-                                    .collect::<Vec<u8>>(),
-                            )
-                            .into_owned()
+                        .filter_map(|r| match &r.data {
+                            RData::TXT(t) => Some(
+                                String::from_utf8_lossy(
+                                    &t.txt_data
+                                        .iter()
+                                        .flat_map(|p| p.iter().copied())
+                                        .collect::<Vec<u8>>(),
+                                )
+                                .into_owned(),
+                            ),
+                            _ => None,
                         })
                         .collect();
                     match read_txt(records.iter().map(String::as_str)) {
@@ -521,6 +550,24 @@ mod tests {
         }
         for good in ["8.8.8.8", "184.192.21.37", "2606:4700::1111"] {
             assert!(is_public(good.parse().unwrap()), "{good}");
+        }
+    }
+
+    #[tokio::test]
+    async fn resolver_specs() {
+        let limits = Limits::default();
+        for good in [
+            "8.8.8.8",
+            "8.8.8.8,8.8.4.4",
+            " 8.8.8.8 , 8.8.4.4 ,",
+            "127.0.0.1:5353",
+            "[2001:4860:4860::8888]:53,8.8.8.8",
+            "2001:4860:4860::8888",
+        ] {
+            assert!(build_resolver(good, &limits).is_ok(), "{good}");
+        }
+        for bad in ["", ",", "8.8.8.8,nope", "dns.google"] {
+            assert!(build_resolver(bad, &limits).is_err(), "{bad}");
         }
     }
 }

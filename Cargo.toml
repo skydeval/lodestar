@@ -16,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
-hickory-resolver = "0.25"
+hickory-resolver = "0.26"
 psl = "2"
 url = "2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
