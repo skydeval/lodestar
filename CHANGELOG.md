@@ -186,8 +186,9 @@ Work towards 0.1.0.
   address of its own (`LODESTAR_STATUS_LISTEN`) and off unless one is
   given. It shows the sync position, the streams, verification and
   totals counted hourly in the background, and serves nothing else;
-  the control handles appear only as a count, so it can be made
-  public while the API stays private.
+  the control handles and the domains appear only as counts, so it
+  can be made public while the API stays private. Its figures are
+  read at most once every 30 seconds, however many people view it.
 
 ### Changed
 
