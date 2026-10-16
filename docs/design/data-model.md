@@ -75,8 +75,9 @@ length, so they are unique by their MD5.
 For an identity whose DID document cannot be rebuilt exactly from its
 claim, PDS and key, such as a labeler with a second key and service,
 the document's `alsoKnownAs`, `verificationMethods` and `services` as
-the directory gave them, as JSON text. Few identities have a row. See
-[Sources](sources.md#what-is-read-from-an-operation).
+the directory gave them, as JSON text. Parts that differ only in their
+names are kept only for identities with a repo, so few identities have
+a row. See [Sources](sources.md#what-is-read-from-an-operation).
 
 ### `plc_recent_ops`: the recovery window
 

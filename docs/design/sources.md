@@ -95,10 +95,22 @@ some identities name more than one `alsoKnownAs` entry; some names are
 kept in another form or not kept at all, such as a handle with capitals
 or an `at://` entry that is not a valid handle. For those, lodestar keeps the operation's
 `alsoKnownAs`, `verificationMethods` and `services` exactly as the
-directory gives them. In the first 50,000 operations of the directory,
-19 identities of 37,676 needed this. These parts are what let lodestar
-answer the directory's DID document read exactly
-([API](api.md#get-did)).
+directory gives them, which is what lets it answer the directory's DID
+document read exactly ([API](api.md#get-did)).
+
+- **Extra keys or services** are kept for every identity. About 1% of
+  operations carry them.
+- **Extra names only** are kept only for identities with a repo. More
+  than half of all operations differ only in their names, nearly all
+  of them spam registrations: one wave alone lists seven names on each
+  of about 48 million identities, and keeping them all would cost
+  20 GB. Of the identities whose name lists are their own, about 0.2%
+  have a repo. For the rest, the document is rebuilt from the claim,
+  PDS and key, and differs from the directory's only in leaving out the
+  extra `alsoKnownAs` entries.
+
+An identity that gains a repo later gets its names kept with its next
+operation.
 
 ### Recoveries
 

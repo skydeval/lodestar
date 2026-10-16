@@ -1,13 +1,13 @@
 //! Loading what a page of operations needs, and writing what it changed,
 //! in one transaction with the cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use tokio_postgres::{Client, Transaction};
 
 use super::apply::{HistRow, Identity, RecentOp, Status};
-use super::op::{Kind, Op};
+use super::op::{Kind, Op, Parts};
 use crate::queue::{self, Item};
 use crate::{db, encoding, handle};
 
@@ -392,21 +392,22 @@ pub async fn apply_page(
 pub(super) fn docs_of<'a>(
     ops: &'a [Op],
     keyed: &'a [Vec<u8>],
-) -> HashMap<&'a [u8], (i64, Option<&'a str>)> {
+) -> HashMap<&'a [u8], (i64, Option<&'a Parts>)> {
     let mut docs = HashMap::new();
     for (op, did) in ops.iter().zip(keyed) {
         if op.kind != Kind::Other {
-            docs.insert(did.as_slice(), (op.seq, op.doc.as_deref()));
+            docs.insert(did.as_slice(), (op.seq, op.doc.as_ref()));
         }
     }
     docs
 }
 
 /// Replace the document parts of every identity in `docs`: none for those
-/// whose stored columns rebuild their document.
+/// whose stored columns rebuild their document, and none for those whose
+/// only difference is their names unless they have a repo.
 pub(super) async fn write_docs(
     tx: &Transaction<'_>,
-    docs: &HashMap<&[u8], (i64, Option<&str>)>,
+    docs: &HashMap<&[u8], (i64, Option<&Parts>)>,
 ) -> Result<()> {
     if docs.is_empty() {
         return Ok(());
@@ -415,12 +416,29 @@ pub(super) async fn write_docs(
     tx.execute("DELETE FROM doc_parts WHERE did = ANY($1)", &[&touched])
         .await
         .context("clearing document parts")?;
+    let names_only: Vec<&[u8]> = docs
+        .iter()
+        .filter(|(_, (_, p))| p.is_some_and(|p| p.names_only))
+        .map(|(did, _)| *did)
+        .collect();
+    let listed: HashSet<Vec<u8>> = if names_only.is_empty() {
+        HashSet::new()
+    } else {
+        tx.query("SELECT did FROM listed WHERE did = ANY($1)", &[&names_only])
+            .await
+            .context("finding which identities have a repo")?
+            .iter()
+            .map(|r| r.get(0))
+            .collect()
+    };
     let (mut d, mut s, mut j) = (Vec::new(), Vec::new(), Vec::new());
-    for (did, (seq, doc)) in docs {
-        if let Some(doc) = doc {
+    for (did, (seq, parts)) in docs {
+        if let Some(p) = parts
+            && (!p.names_only || listed.contains(*did))
+        {
             d.push(*did);
             s.push(*seq);
-            j.push(*doc);
+            j.push(p.json.as_str());
         }
     }
     if !d.is_empty() {

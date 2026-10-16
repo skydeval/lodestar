@@ -220,7 +220,9 @@ stores, in the directory's shape and with its content type,
   verification method is a `Multikey`, each service is listed with its
   `#id`. Identities whose documents need more than the stored claim, PDS
   and key, such as labelers, are answered from the parts lodestar keeps
-  for them ([Sources](sources.md#what-is-read-from-an-operation)).
+  for them ([Sources](sources.md#what-is-read-from-an-operation)). An
+  identity with no repo whose document lists extra `alsoKnownAs`
+  entries is answered without them.
 - `alsoKnownAs` is the document's own list, which is a claim. Whether
   the handle is verified is a question for `/account/{did}`.
 - Object keys come in alphabetical order, and a document with several

@@ -18,7 +18,11 @@ use super::store;
 use super::sync::{self, Opts};
 use crate::encoding;
 
-pub const SOURCE: &str = "plc-documents";
+/// The first pass, `plc-documents`, kept parts that differ only in their
+/// names for every identity, which spam registrations made tens of
+/// gigabytes. Under a new name the pass runs again with the rule that
+/// keeps those only for identities with a repo, and removes the rest.
+pub const SOURCE: &str = "plc-documents-2";
 
 /// What the pass has to do: the operations after `after`, up to and
 /// including `until`.
@@ -239,6 +243,43 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn parts_that_differ_only_in_names_are_kept_only_with_a_repo() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let names = r#"{"type":"plc_operation","prev":null,"alsoKnownAs":["at://a.example.com","at://b.example.com"],"services":{"atproto_pds":{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"verificationMethods":{"atproto":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF"}}"#;
+        let spam = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+        let account = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
+        let labeler = "did:plc:cccccccccccccccccccccccc";
+        client
+            .execute(
+                "INSERT INTO listed (did) VALUES ($1)",
+                &[&encoding::did_bytes(account)],
+            )
+            .await
+            .unwrap();
+        let ops = vec![
+            parse_line(&line(spam, 1, names)).unwrap(),
+            parse_line(&line(account, 2, names)).unwrap(),
+            parse_line(&line(labeler, 3, LABELER)).unwrap(),
+        ];
+        apply(&mut client, &ops, 10).await.unwrap();
+        let mut rows: Vec<Vec<u8>> = client
+            .query("SELECT did FROM doc_parts", &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![encoding::did_bytes(account), encoding::did_bytes(labeler)],
+            "the unlisted identity's names are not kept; the labeler's parts are, listed or not"
+        );
     }
 
     #[tokio::test]

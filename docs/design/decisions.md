@@ -165,6 +165,10 @@ stay behind the proxy.
 
 ## Known limitations
 
+- **Extra names of identities with no repo are not kept.** `GET /{did}`
+  for such an identity leaves out the extra `alsoKnownAs` entries the
+  directory shows; everything else matches. Keeping them would cost
+  several gigabytes for spam registrations.
 - **One verification role.** Its rate limits live in its memory, so a
   second one would double them.
 - **`did:web` coverage is incomplete.** No source lists every `did:web`;

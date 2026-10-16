@@ -195,9 +195,8 @@ Work towards 0.1.0.
   DID is `DID not available`, an unknown one `DID not registered`.
 - `doc_parts`: the DID document parts of the identities whose document
   the stored claim, PDS and key cannot rebuild, kept as the directory
-  gives them. Labelers' second key and service are the main case;
-  names lodestar keeps lowercased or does not keep are the other. In
-  the first 50,000 operations, 19 identities of 37,676 have them.
+  gives them: labelers' second key and service, and, for identities
+  with a repo, names lodestar keeps lowercased or does not keep.
 - Design documentation in `docs/design/`: what lodestar is and leaves
   out, its roles, sources, data model, handle verification, API,
   deployment budgets, and the decisions behind them, with the known
@@ -310,6 +309,11 @@ Work towards 0.1.0.
 - A failing domain's 24-hour hold kept running while a control pause
   stopped every check, so it could run out during lodestar's own outage.
   It now stands still.
+- `doc_parts` kept every identity whose DID document lists more names
+  than its claim, which spam registrations made 25 GB and filled the
+  reference host's disk. Parts that differ only in their names are now
+  kept only for identities with a repo; extra keys and services are
+  kept for all. The document pass runs again under the new rule.
 - The verification role counted handle claims once, when it started.
   Started beside a first sync, it counted an empty table and would
   later have checked every claimant of a shared handle separately. It

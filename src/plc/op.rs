@@ -32,11 +32,23 @@ pub struct Op {
     pub claim: Option<String>,
     pub pds: Option<String>,
     pub key: Option<Vec<u8>>,
-    /// The DID document's parts as the directory gives them, JSON, when
-    /// the claim, PDS and key cannot rebuild them exactly: more keys or
-    /// services than those, more than one name, or a value lodestar keeps
-    /// in another form. None for most operations.
-    pub doc: Option<String>,
+    /// The DID document's parts as the directory gives them, when the
+    /// claim, PDS and key cannot rebuild them exactly. None for most
+    /// operations.
+    pub doc: Option<Parts>,
+}
+
+/// An operation's DID document parts, kept because the stored columns
+/// cannot rebuild them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parts {
+    /// `alsoKnownAs`, `verificationMethods` and `services`, JSON.
+    pub json: String,
+    /// Only the names (`alsoKnownAs`) differ: more than one, or one kept
+    /// in another form. Keys and services are rebuilt exactly. Such parts
+    /// are kept only for identities with a repo; spam registrations carry
+    /// tens of millions of them.
+    pub names_only: bool,
 }
 
 /// Text Postgres can store. JSON may carry a NUL, which it cannot.
@@ -69,8 +81,13 @@ fn own_parts(
     claim: Option<&str>,
     pds: Option<&str>,
     key: Option<&[u8]>,
-) -> Option<String> {
-    (given != rebuilt_parts(claim, pds, key)).then(|| given.to_string())
+) -> Option<Parts> {
+    let rebuilt = rebuilt_parts(claim, pds, key);
+    (given != rebuilt).then(|| Parts {
+        names_only: given["verificationMethods"] == rebuilt["verificationMethods"]
+            && given["services"] == rebuilt["services"],
+        json: given.to_string(),
+    })
 }
 
 /// The directory reads a legacy `create` as an operation with these
@@ -106,7 +123,7 @@ type Derived = (
     Option<String>,
     Option<String>,
     Option<Vec<u8>>,
-    Option<String>,
+    Option<Parts>,
 );
 
 /// The claim, PDS, key and document parts an operation sets.
@@ -283,7 +300,9 @@ mod tests {
         );
         let op = parse_line(&line(&labeler)).unwrap();
         assert_eq!(op.pds.as_deref(), Some("https://pds.example.com"));
-        let doc: Value = serde_json::from_str(op.doc.as_deref().unwrap()).unwrap();
+        let parts = op.doc.unwrap();
+        assert!(!parts.names_only, "a labeler's parts are kept for everyone");
+        let doc: Value = serde_json::from_str(&parts.json).unwrap();
         assert_eq!(
             doc["services"]["atproto_labeler"]["endpoint"],
             "https://mod.example.com"
@@ -300,7 +319,9 @@ mod tests {
                 r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":{aka},"services":{{}},"verificationMethods":{{}}}}"#
             )))
             .unwrap();
-            let doc: Value = serde_json::from_str(op.doc.as_deref().expect(aka)).unwrap();
+            let parts = op.doc.expect(aka);
+            assert!(parts.names_only, "{aka}");
+            let doc: Value = serde_json::from_str(&parts.json).unwrap();
             assert_eq!(doc["alsoKnownAs"], serde_json::from_str::<Value>(aka).unwrap());
         }
         // A legacy create as the directory reads it.
@@ -311,9 +332,9 @@ mod tests {
         let create = format!(
             r#"{{"type":"create","prev":null,"handle":"Old.Example.com","service":"pds.example.com","signingKey":"{key}","recoveryKey":"{key}"}}"#
         );
-        let doc: Value =
-            serde_json::from_str(parse_line(&line(&create)).unwrap().doc.as_deref().unwrap())
-                .unwrap();
+        let parts = parse_line(&line(&create)).unwrap().doc.unwrap();
+        assert!(!parts.names_only, "its PDS is kept in another form too");
+        let doc: Value = serde_json::from_str(&parts.json).unwrap();
         assert_eq!(doc["alsoKnownAs"], json!(["at://Old.Example.com"]));
         assert_eq!(
             doc["services"]["atproto_pds"]["endpoint"],
