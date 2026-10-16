@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use tokio_postgres::Client;
 
 use super::check::Outcome;
-use super::domains::{Admit, Kind};
+use super::domains::{Admit, Answer, Kind};
 use super::limiter;
 use super::store::{self, Applied};
 use super::web;
@@ -141,6 +141,22 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
         return Ok((UNAVAILABLE, None));
     };
     let at = chrono::Utc::now().timestamp_millis();
+    // Taken as the domain's probe, the request's answer is the probe's: a
+    // conclusive one ends the pause. Other requests stay out of the
+    // samples, so lookups of arbitrary handles cannot start a pause.
+    if admit == Admit::Probe {
+        let answer = match &found.outcome {
+            Outcome::Did(_) => Answer::Did,
+            Outcome::Nothing => Answer::Nothing,
+            Outcome::Inconclusive(_) => Answer::Failed,
+        };
+        let changes = shared
+            .pauses
+            .lock()
+            .expect("pauses lock")
+            .record(&domain, Kind::First, false, answer, true, at);
+        super::worker::save_changes(&*shared.db().lock().await, &changes).await?;
+    }
     let did_text = match &found.outcome {
         Outcome::Nothing => return Ok((NOT_FOUND, None)),
         Outcome::Inconclusive(_) => return Ok((UNAVAILABLE, None)),

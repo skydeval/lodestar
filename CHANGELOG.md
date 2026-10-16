@@ -298,6 +298,18 @@ Work towards 0.1.0.
   -0349.
 - RUSTSEC-2026-0118 and -0119 against hickory-proto 0.25 are fixed by
   the move to 0.26 and no longer ignored.
+- The `accounts` indexes grew with every weekly lap and were rebuilt
+  only once, after the first sync. The verification role now keeps each
+  one's bytes per entry after a rebuild, and rebuilds an index without
+  blocking when it has grown half again past that, while no lap runs.
+- A lookup of a shared handle that no claimant holds resolved the handle
+  live every time. While the shared handle's own result is under a week
+  old it now answers `not_found` from it.
+- A consumer's lookup taken as a failing domain's probe never counted as
+  the probe, so its answer could not end the pause.
+- A failing domain's 24-hour hold kept running while a control pause
+  stopped every check, so it could run out during lodestar's own outage.
+  It now stands still.
 - The verification role counted handle claims once, when it started.
   Started beside a first sync, it counted an empty table and would
   later have checked every claimant of a shared handle separately. It

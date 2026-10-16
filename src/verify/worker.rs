@@ -680,6 +680,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         };
         laps.spawn(lap::run(shared.clone(), counter.clone(), o, stop.clone()));
     }
+    // Rebuilds the accounts indexes when the laps have grown them.
+    let client = db::connect(&opts.database_url).await?;
+    laps.spawn(super::maintain::run(client, stop.clone()));
 
     let mut running = Running {
         tasks: JoinSet::new(),
@@ -866,8 +869,14 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 queue_retries(&control).await?;
                 count_claims_at_the_tip(&control, &shared, &counter, opts.shared_threshold).await?;
                 queue_documents(&control, web::Rules::default().refresh_secs).await?;
-                // Let the domain pauses' holds run out.
-                let changes = shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis());
+                // Let the domain pauses' holds run out, but not while a
+                // control pause has stopped every check: a domain cannot
+                // answer then, and the holds resume where they were.
+                let changes = if shared.gate.is_open() {
+                    shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis())
+                } else {
+                    Vec::new()
+                };
                 // A domain let go by its hold has given no conclusive
                 // answer for a day: it is checked at the slowest pace,
                 // whatever its rate, until it gives one.

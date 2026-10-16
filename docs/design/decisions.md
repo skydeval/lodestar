@@ -165,9 +165,6 @@ stay behind the proxy.
 
 ## Known limitations
 
-- **Indexes are not rebuilt automatically after the first sync.** Weekly
-  laps can grow the `accounts` indexes; an operator rebuilds them by hand
-  ([Deployment](deployment.md#maintenance)).
 - **One verification role.** Its rate limits live in its memory, so a
   second one would double them.
 - **`did:web` coverage is incomplete.** No source lists every `did:web`;

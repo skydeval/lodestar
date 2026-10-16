@@ -228,6 +228,8 @@ impl Source<'_> {
             .batch_execute("ANALYZE")
             .await
             .context("analyzing")?;
+        // The key as rebuilt is what the verification role keeps it near.
+        crate::verify::maintain::record_baseline(&*self.client, "accounts_pkey").await?;
         Ok(())
     }
 

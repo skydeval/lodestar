@@ -174,8 +174,11 @@ The handle is lowercased first. A handle that can never resolve
 is `not_found` with no request.
 
 If no account holds the handle as verified and lodestar is not yet
-live, the answer is `syncing` at once. Otherwise lodestar resolves it
-now, within the deadline. If it resolves to an active account that claims it,
+live, the answer is `syncing` at once. A
+[shared handle](handle-verification.md#shared-handles) resolved in the
+last week is `not_found` from its row, with no new resolution: none of
+its claimants holds it. Otherwise lodestar resolves the handle now,
+within the deadline. If it resolves to an active account that claims it,
 that is a two-way verification: it is recorded and returned. If it
 resolves to a `did:plc` lodestar does not have yet, or has with another
 claim, while lodestar is not live, the answer is `syncing`. Otherwise it

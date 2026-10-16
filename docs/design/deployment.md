@@ -131,20 +131,23 @@ origin certificate, through the Caddyfile's `tls` line.
 
 **Index growth.** Every weekly lap rewrites the account row of every
 handle it checks, about 50 million rows. Postgres reuses the space this
-frees in the table, but an index can keep growing. Lodestar rebuilds the
-`accounts` primary key once, when the first sync reaches the tip, and
-does not yet rebuild it on its own after that. Watch the size of the
-`accounts` indexes in health (the primary key and the verified-handle
-index together); if it grows well past its size after the first sync,
-rebuild them without blocking reads or writes:
+frees in the table, but an index keeps the size it grew to; one full
+sweep was measured to double the primary key. So lodestar looks after
+the two `accounts` indexes itself:
 
-```sql
-REINDEX INDEX CONCURRENTLY accounts_pkey;
-REINDEX INDEX CONCURRENTLY accounts_verified_handle;
-```
+- After every rebuild it keeps each index's bytes per entry as a
+  baseline. Bytes per entry, not size, because the verified-handle index
+  rightly grows as handles are verified.
+- Once an hour the verification role compares. An index past 1.5 times
+  its baseline is rebuilt with `REINDEX … CONCURRENTLY`, so reads and
+  writes go on, and only while no lap is running.
+- An index with no baseline yet, on a database from before this was
+  kept, is rebuilt once to get one.
 
 A rebuild needs free space equal to the index, about 5 GiB for the key,
-plus room for sorting and write-ahead log while it runs.
+plus room for sorting and write-ahead log while it runs. A rebuild that
+fails, for lack of space or otherwise, is logged and tried again an hour
+later; the half-built copy it leaves is dropped first.
 
 **Upgrades.** Every role creates or updates the schema when it starts.
 After an upgrade that adds something to fill in, such as the document

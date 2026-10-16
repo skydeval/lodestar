@@ -82,8 +82,9 @@ impl App {
     }
 
     /// Ask the verification role for a live resolution and wait for it, up
-    /// to the deadline. None if no answer came in time; the work still
-    /// completes and is stored, so a repeat of the request finds it.
+    /// to the deadline. None if no answer came in time. Work the role has
+    /// already taken completes and is stored, so a repeat of the request
+    /// finds it; work it has not taken by the deadline is dropped.
     async fn ask(&self, kind: i16, subject: &str) -> Result<Option<(String, Option<Vec<u8>>)>> {
         let db = self.db();
         let id: i64 = db
@@ -610,6 +611,20 @@ async fn get_handle(
             // so there is nothing to wait for.
             if src.pointer("/plc/phase").and_then(Value::as_str) != Some("live") {
                 return Err(Miss(StatusCode::SERVICE_UNAVAILABLE, "syncing", Some(src)));
+            }
+            // A shared handle is resolved for all its claimants on its own
+            // schedule. While that result is current it answers here: no
+            // claimant holds the handle, so no one is verified for it.
+            let shared = app
+                .db()
+                .query_opt(
+                    "SELECT 1 FROM shared_handles \
+                     WHERE handle = $1 AND checked_at > now() - interval '7 days'",
+                    &[&handle],
+                )
+                .await?;
+            if shared.is_some() {
+                return Err(Miss(StatusCode::NOT_FOUND, "not_found", None));
             }
             let (code, word) = match app.ask(requests::ASK_HANDLE, &handle).await? {
                 Some((outcome, Some(did))) if outcome == requests::FOUND => {

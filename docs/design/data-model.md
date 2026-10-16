@@ -183,6 +183,11 @@ Nothing indexes `handle_claim` beyond the verified rows, and nothing
 indexes a next-check time: the sweep reads `accounts` sequentially and
 does not need one.
 
+The `accounts` primary key is rebuilt when the first sync reaches the
+tip, and both `accounts` indexes are rebuilt whenever the weekly laps
+have grown them half again past their size after a rebuild
+([Deployment](deployment.md#maintenance)).
+
 ## Size
 
 On the reference host in October 2026, for about 123 million

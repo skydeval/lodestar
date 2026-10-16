@@ -304,6 +304,7 @@ nearly every handle on the network is decided over HTTPS.
   samples below are cleared.
 - **When a pause ends**, every failure clock moves forward by the
   pause's length, so lodestar's own outage is not charged to any handle.
+  The domain pauses' holds stand still while it lasts.
 - **A control that has gone bad**, failing every round for 24 hours
   while another control of its method mostly passed, is left out of
   the count until it passes again, and health reports it. A method is
@@ -332,7 +333,8 @@ of a working domain cannot pause it by being checked together.
   sweep sends the domain's due handles to the queue and moves on; a
   large domain's walker waits where it is.
 - **End.** A probe with a conclusive answer ends the pause, and its
-  result is applied.
+  result is applied. A consumer's lookup can be the probe; its answer
+  counts the same way.
 - **Hold.** If nothing conclusive has come back after 24 hours, the
   pause ends anyway and cannot start again until something does. The
   domain's queued handles that are not verified are then settled as
