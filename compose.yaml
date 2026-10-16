@@ -82,6 +82,11 @@ services:
   api:
     <<: *lodestar
     command: ["api", "--listen", "0.0.0.0:8080"]
+    environment:
+      LODESTAR_DATABASE_URL: postgres://lodestar:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres/lodestar
+      LODESTAR_USER_AGENT: ${LODESTAR_USER_AGENT:?set LODESTAR_USER_AGENT in .env}
+      # The status page, which the bundled Caddy serves at /status/.
+      LODESTAR_STATUS_LISTEN: ${LODESTAR_STATUS_LISTEN-0.0.0.0:8090}
     # On the host's loopback only: the public reaches the API through a
     # proxy that passes the read paths alone (Caddyfile), never `/ops/*`.
     ports:
@@ -89,18 +94,19 @@ services:
       # The status page, when LODESTAR_STATUS_LISTEN turns it on.
       - "${LODESTAR_STATUS_BIND:-127.0.0.1:8090}:8090"
 
-  # HTTPS for the status page and the read API, and nothing else; the
-  # rules are in Caddyfile. Off unless the `proxy` profile is on
-  # (COMPOSE_PROFILES=proxy in .env). A host that already runs a proxy,
-  # such as one shared with a PDS, leaves it off and copies the rules.
+  # The public face: the status page and the read API, and nothing else;
+  # the rules are in Caddyfile. HTTPS on LODESTAR_DOMAIN, or plain HTTP
+  # on port 80 until one is set. A host that already runs a proxy, such
+  # as one shared with a PDS, sets LODESTAR_PROXY=0 and copies the rules.
   caddy:
     image: caddy:2
-    profiles: ["proxy"]
     restart: unless-stopped
+    deploy:
+      replicas: ${LODESTAR_PROXY:-1}
     depends_on:
       - api
     environment:
-      LODESTAR_DOMAIN: ${LODESTAR_DOMAIN:-}
+      LODESTAR_DOMAIN: ${LODESTAR_DOMAIN:-:80}
     ports:
       - "80:80"
       - "443:443"

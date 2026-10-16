@@ -201,11 +201,12 @@ Work towards 0.1.0.
   out, its roles, sources, data model, handle verification, API,
   deployment budgets, and the decisions behind them, with the known
   limitations.
-- A bundled Caddy in `compose.yaml`, off unless the `proxy` profile is
-  on, with the public rules in `Caddyfile`: HTTPS on
-  `LODESTAR_DOMAIN` for the status page and the reads, and nothing
-  else. A host with a proxy of its own copies the rules instead; the
-  README says how.
+- A bundled Caddy in `compose.yaml`, on by default, with the public
+  rules in `Caddyfile`: the status page and the reads, and nothing
+  else, on HTTPS for `LODESTAR_DOMAIN`, or on plain HTTP port 80 until
+  one is set. The status page is on by default in compose with it. A
+  host with a proxy of its own sets `LODESTAR_PROXY=0` and copies the
+  rules; the README says how.
 - A one-off pass in the ingest role fills `doc_parts` for a copy made
   before it was kept: it reads the export from the start up to where
   the PLC source was when it began, about 9 hours for the whole

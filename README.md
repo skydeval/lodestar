@@ -16,7 +16,7 @@ verifies every handle itself. It keeps each identity's current state
 and history, not the signed operations, which is what keeps it
 small; it never writes to the directory.
 
-The read API is meant to be public, behind a reverse proxy that
+The read API is publicly accessible, behind a reverse proxy that
 passes only the read paths (see [Going public](#going-public)). There is no
 authentication, and nothing public can change anything.
 
@@ -114,11 +114,13 @@ flag of the same name in lower case (`LODESTAR_WALK_EVERY_DAYS` is
 | `LODESTAR_MAX_BATCH` | api | 1000 | most DIDs in one batch lookup |
 | `LODESTAR_LIVE_DEADLINE_SECONDS` | api | 5 | how long a lookup waits on a live check |
 | `LODESTAR_CONSUMER_QUEUE_CAP` | api | 10000 | most consumer-requested checks waiting, per kind |
-| `LODESTAR_STATUS_LISTEN` | api | off | where the status page listens inside its container |
+| `LODESTAR_STATUS_LISTEN` | api | `0.0.0.0:8090` in compose, off otherwise | where the status page listens inside its container; empty turns it off |
 | `LODESTAR_STATUS_TOTALS_MINUTES` | api | 60 | how often the status page's totals are counted; each count reads all of `accounts` |
 
 `LODESTAR_API_BIND`, `LODESTAR_STATUS_BIND` and `POSTGRES_PASSWORD`
-are read by `compose.yaml` itself.
+are read by `compose.yaml` itself, as are the bundled Caddy's two
+settings: `LODESTAR_DOMAIN`, the domain it serves with HTTPS (plain
+HTTP on port 80 if unset), and `LODESTAR_PROXY=0`, which turns it off.
 
 A resolver at one address is asked about three queries per check at
 the most, so the default global rate of 400 checks a second can
@@ -139,33 +141,9 @@ when its rates could pass 1,400.
 | `GET /ops/health` | sync position, verification, storage |
 | `GET /ops/metrics` | the same, in Prometheus format |
 
-The status page, when `LODESTAR_STATUS_LISTEN` turns it on, is on an
-address of its own and serves only `GET /status/` and its figures at
-`GET /status/data.json`. It names nothing private.
-
-## Going public
-
-The API and status page listen on the host's loopback. The public
-reaches them through a proxy that passes only the status page and
-the reads above; `/ops/*` and the refresh request stay unreachable.
-[Caddyfile](Caddyfile) holds those rules.
-
-**On a host of its own**, use the bundled Caddy:
-
-1. Point your domain at the host (A, and AAAA for IPv6). Behind
-   Cloudflare's proxy, either use "DNS only" or give Caddy a
-   certificate of your own (see Caddyfile's `tls` line).
-2. Open ports 80 and 443.
-3. In `.env`: `COMPOSE_PROFILES=proxy`,
-   `LODESTAR_DOMAIN=lodestar.example.com`, and
-   `LODESTAR_STATUS_LISTEN=0.0.0.0:8090` for the status page.
-4. `docker compose up -d`. Caddy fetches its certificate within a
-   minute and renews it itself.
-
-**On a host that already runs a proxy** (one shared with a PDS, say),
-leave the profile off and copy Caddyfile's rules into that proxy, with
-`127.0.0.1:8080` and `127.0.0.1:8090` in place of `api:8080` and
-`api:8090`.
+The status page is on an address of its own and serves only
+`GET /status/` and its figures at `GET /status/data.json`. It names
+nothing private.
 
 A handle is reported as an account's `handle` only when lodestar
 has verified it: the account claims the handle, and the handle
@@ -176,6 +154,29 @@ Every account answer carries the PLC source's position, so a
 consumer can tell how fresh it is. An identity lodestar does not
 have is `not_found` only when the source is at the directory's tip;
 before that it is `syncing`.
+
+## Going public
+
+The API and status page listen on the host's loopback. The public
+reaches them through a proxy that passes only the status page and
+the reads above; `/ops/*` and the refresh request stay unreachable.
+[Caddyfile](Caddyfile) holds those rules, and compose runs Caddy with
+them by default: on plain HTTP port 80 until you give it a domain.
+
+**For HTTPS on your own domain:**
+
+1. Point the domain at the host (A, and AAAA for IPv6). Behind
+   Cloudflare's proxy, either use "DNS only" or give Caddy a
+   certificate of your own (see Caddyfile's `tls` line).
+2. Open ports 80 and 443.
+3. In `.env`: `LODESTAR_DOMAIN=lodestar.example.com`.
+4. `docker compose up -d`. Caddy fetches its certificate within a
+   minute and renews it itself.
+
+**On a host that already runs a proxy** (one shared with a PDS, say),
+set `LODESTAR_PROXY=0` in `.env` to leave the bundled one off, and copy
+Caddyfile's rules into yours, with `127.0.0.1:8080` and
+`127.0.0.1:8090` in place of `api:8080` and `api:8090`.
 
 ## Politeness
 

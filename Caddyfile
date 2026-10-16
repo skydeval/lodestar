@@ -1,8 +1,9 @@
 # Lodestar's public face: the status page and the read API, and nothing
-# else. Compose's `caddy` service uses this file when the `proxy` profile
-# is on. A host that already runs a proxy copies these rules into it, with
-# the API's and status page's host ports (127.0.0.1:8080 and :8090 by
-# default) in place of api:8080 and api:8090.
+# else. Compose's `caddy` service uses this file, on LODESTAR_DOMAIN with
+# HTTPS, or on plain HTTP port 80 until a domain is set. A host that
+# already runs a proxy sets LODESTAR_PROXY=0 and copies these rules into
+# its own, with the API's and status page's host ports (127.0.0.1:8080
+# and :8090 by default) in place of api:8080 and api:8090.
 
 {$LODESTAR_DOMAIN} {
 	# Caddy fetches and renews a certificate for the domain by itself. To

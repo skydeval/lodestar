@@ -297,7 +297,8 @@ tip.
 
 An optional read-only page at `/status/`, with its figures at
 `/status/data.json`, served by the API role on an address of its own
-when `LODESTAR_STATUS_LISTEN` is set. It shows the copy of the directory,
+when `LODESTAR_STATUS_LISTEN` is set, as it is by default in compose. It
+shows the copy of the directory,
 the handle totals, the weekly sweep, verification and the sources.
 
 It is built to be public:

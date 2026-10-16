@@ -180,4 +180,3 @@ stay behind the proxy.
   periods, retry schedule and pause thresholds have no setting yet.
 - **Event work past its cap is dropped.** The weekly lap covers what it
   would have done.
-- **x86-64 images only.**

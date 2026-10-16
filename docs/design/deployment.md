@@ -110,17 +110,17 @@ live in the proxy, in the repository's [Caddyfile](../../Caddyfile):
 | `POST /accounts` | the API |
 | anything else, including `/ops/*` and `POST …/refresh` | 404 |
 
-**On a host of its own**, the compose file bundles Caddy, off unless the
-`proxy` profile is turned on. Set `COMPOSE_PROFILES=proxy` and
-`LODESTAR_DOMAIN`, point the domain at the host, open ports 80 and 443,
-and Caddy fetches and renews its own certificate. Inside compose it
-reaches the API and status page by their service names, so their host
-ports stay on loopback.
+**By default** the compose file runs Caddy with these rules, and the
+status page with it, so a new install has a safe public face from its
+first start: plain HTTP on port 80. Set `LODESTAR_DOMAIN`, point the
+domain at the host and open ports 80 and 443, and Caddy fetches and
+renews its own certificate. Inside compose it reaches the API and status
+page by their service names, so their host ports stay on loopback.
 
 **On a host that already runs a proxy**, such as one shared with a PDS,
-leave the profile off and copy the Caddyfile's rules into that proxy,
-with `127.0.0.1:8080` and `127.0.0.1:8090` in place of the service
-names.
+set `LODESTAR_PROXY=0` to leave the bundled one off, and copy the
+Caddyfile's rules into yours, with `127.0.0.1:8080` and
+`127.0.0.1:8090` in place of the service names.
 
 **Behind a CDN** such as Cloudflare's proxy, the CDN is the place for
 rate limits on the public API; lodestar has none of its own. To keep the
@@ -168,4 +168,5 @@ These follow from the design but have not been measured.
 - **Small machines.** The `hobbyist` profile lowers the largest
   provider's rate, the global rate and every cap, so the first sweep
   takes far longer, but nothing is left out.
-- **x86-64 only.** Images for other architectures come after 0.1.
+- **ARM.** Nothing in lodestar is tied to x86-64; ARM64 images are
+  planned, and until then an ARM host can build the image itself.

@@ -138,9 +138,10 @@ requests in flight. Compose allows each role 40 seconds.
 ## Packaging
 
 - One binary, `lodestar`, with one subcommand per role.
-- One image, built for x86-64.
-- One compose file: Postgres 16, the three roles, and an optional Caddy
-  for going public ([Deployment](deployment.md#going-public)).
+- One image, built for x86-64 today, with ARM64 planned.
+- One compose file: Postgres 16, the three roles, and Caddy as the
+  public face, which a host with a proxy of its own turns off
+  ([Deployment](deployment.md#going-public)).
 - Settings are command-line flags, and every setting an operator
   normally needs also has a `LODESTAR_` environment name; the
   [README](../../README.md#configuration) lists those. A few switches
