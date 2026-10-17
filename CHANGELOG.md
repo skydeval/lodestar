@@ -175,11 +175,12 @@ Work towards 0.1.0.
   rules; `docs/running.md` says how. A certificate of your own goes in
   `certs/` with a `.caddy` file naming it, which the Caddyfile imports,
   so the tracked Caddyfile is never edited.
-- A one-off pass in the ingest role fills `doc_parts` for a copy made
-  before it was kept: it reads the export from the start up to where
+- A one-off pass in the ingest role fills the `doc_parts` the first
+  sync couldn't know to keep, once the first relay walk has said which
+  identities have repos: it reads the export from the start up to where
   the PLC source was when it began, about 9 hours for the whole
   directory, and never replaces parts the PLC source has written
-  since. A copy synced from the start has nothing to fill.
+  since.
 
 ### Changed
 

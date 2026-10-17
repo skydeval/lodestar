@@ -153,11 +153,13 @@ all. Queuing starts when the source first reaches the tip.
 
 ## The document pass
 
-A copy of the directory made before lodestar kept DID document parts
-has none. The document pass fills them in: a one-off job in the ingest
-role that reads the export from the start up to where the PLC source
-was when the pass began, and writes each identity's parts as of its
-last operation in that range.
+The first sync writes DID document parts as it goes, but it runs
+before the first relay walk, when nothing is known to have a repo yet,
+so the names that are kept only for listed identities are missing. The
+document pass fills them in: a one-off job in the ingest role that
+reads the export from the start up to where the PLC source was when
+the pass began, and writes each identity's parts as of its last
+operation in that range.
 
 - It runs beside the live source, at the directory's pace, about 9
   hours for the whole directory, and resumes from its own position
@@ -166,11 +168,8 @@ last operation in that range.
   any identity with an operation after the pass's end in the recovery
   window is left alone. Because it relies on that window, a pass that
   began more than 72 hours ago starts again.
-- It begins only once a relay walk has finished. A first sync writes
-  parts as it goes, but it runs before the first walk, when nothing is
-  known to have a repo yet, so the names that are kept only for listed
-  identities have to be filled in afterwards. On a new copy, the pass
-  therefore runs once after the first walk, beside the first sweep.
+- It begins only once the first relay walk has finished, so it runs
+  beside the first sweep.
 
 ## Jetstream
 

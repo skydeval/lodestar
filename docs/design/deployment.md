@@ -149,11 +149,6 @@ plus room for sorting and write-ahead log while it runs. A rebuild that
 fails, for lack of space or otherwise, is logged and tried again an hour
 later; the half-built copy it leaves is dropped first.
 
-**Upgrades.** Every role creates or updates the schema when it starts.
-After an upgrade that adds something to fill in, such as the document
-pass, the ingest role does it in the background while everything keeps
-serving.
-
 ## Other shapes
 
 These follow from the design but have not been measured.

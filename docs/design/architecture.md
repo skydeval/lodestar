@@ -58,8 +58,8 @@ connection:
   default ([Sources](sources.md#jetstream));
 - the **relay walk**, which lists every repo a relay knows about once a
   week ([Sources](sources.md#the-relay-walk));
-- the **document pass**, a one-off job that fills in DID document parts
-  for a copy made before lodestar kept them
+- the **document pass**, a one-off job after the first relay walk that
+  fills in the DID document parts the first sync couldn't know to keep
   ([Sources](sources.md#the-document-pass)). Once done it does nothing.
 
 If any one of these ends, for any reason, the whole role stops, and its
