@@ -113,22 +113,6 @@ set `LODESTAR_PROXY=0` in `.env` to leave the bundled one off, and copy
 Caddyfile's rules into yours, with `127.0.0.1:8080` and
 `127.0.0.1:8090` in place of `api:8080` and `api:8090`.
 
-## Upgrading
-
-```sh
-git pull
-docker compose pull
-docker compose up -d
-```
-
-`compose.yaml` names the image version, so pulling the checkout is
-what moves you to a new release; read the [changelog](../CHANGELOG.md)
-first. The database is kept across upgrades; each role brings
-its schema up to date when it starts. Your `.env` and `certs/` are not
-tracked, so a pull leaves them alone. If you changed `compose.yaml` or
-`Caddyfile` yourself, `git stash` before the pull and `git stash pop`
-after.
-
 ## Politeness
 
 Lodestar asks other people's servers a great many small questions.
