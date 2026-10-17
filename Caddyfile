@@ -8,8 +8,9 @@
 {$LODESTAR_DOMAIN} {
 	# Caddy fetches and renews a certificate for the domain by itself. To
 	# use one of your own instead (a Cloudflare Origin certificate, say),
-	# put the two files in ./certs and uncomment this line.
-	# tls /etc/caddy/certs/lodestar.pem /etc/caddy/certs/lodestar.key
+	# put it in ./certs with a file ending .caddy that names it; see
+	# docs/running.md. With no such file Caddy logs a warning and goes on.
+	import /etc/caddy/certs/*.caddy
 
 	redir / /status/ 302
 

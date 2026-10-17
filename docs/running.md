@@ -85,16 +85,49 @@ a domain.
 
 1. Point the domain at the host (A, and AAAA for IPv6). Behind
    Cloudflare's proxy, either use "DNS only" or give Caddy a
-   certificate of your own (see Caddyfile's `tls` line).
+   certificate of your own (below).
 2. Open ports 80 and 443.
 3. In `.env`: `LODESTAR_DOMAIN=lodestar.example.com`.
 4. `docker compose up -d`. Caddy fetches its certificate within a
    minute and renews it itself.
 
+**To use a certificate of your own** (a Cloudflare Origin
+certificate, with Cloudflare's SSL mode set to Full), put it in
+`certs/` beside `compose.yaml`, with a file that tells Caddy to use
+it. Nothing tracked is edited, so `git pull` stays clean:
+
+```sh
+mkdir -p certs
+cp origin.pem certs/lodestar.pem
+cp origin.key certs/lodestar.key
+chmod 600 certs/lodestar.key
+echo 'tls /etc/caddy/certs/lodestar.pem /etc/caddy/certs/lodestar.key' > certs/tls.caddy
+docker compose restart caddy
+```
+
+Caddy reads every `certs/*.caddy` file into the site, and without one
+logs `No files matching import glob pattern` and goes on.
+
 **On a host that already runs a proxy** (one shared with a PDS, say),
 set `LODESTAR_PROXY=0` in `.env` to leave the bundled one off, and copy
 Caddyfile's rules into yours, with `127.0.0.1:8080` and
 `127.0.0.1:8090` in place of `api:8080` and `api:8090`.
+
+## Upgrading
+
+```sh
+git pull
+docker compose pull
+docker compose up -d
+```
+
+`compose.yaml` names the image version, so pulling the checkout is
+what moves you to a new release; read the [changelog](../CHANGELOG.md)
+first. The database is kept across upgrades; each role brings
+its schema up to date when it starts. Your `.env` and `certs/` are not
+tracked, so a pull leaves them alone. If you changed `compose.yaml` or
+`Caddyfile` yourself, `git stash` before the pull and `git stash pop`
+after.
 
 ## Politeness
 
