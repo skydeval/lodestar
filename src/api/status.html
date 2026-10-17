@@ -129,7 +129,7 @@ function render(d) {
     row("Tip last confirmed", ago(p.tip_confirmed_at, now)) +
     row("Identities", fmt(d.totals && d.totals.identities));
 
-  // Handle statuses, from the periodic count.
+  // Handle statuses, kept live.
   const t = d.totals || {};
   const by = t.active_by_handle_status || {};
   const parts = [
@@ -146,8 +146,8 @@ function render(d) {
     `<i style="width:${checked ? 100 * (by[k] || 0) / checked : 0}%;background:${c}"></i>`).join("");
   $("status-legend").innerHTML = parts.filter(([k]) => by[k]).map(([k, label, c]) =>
     `<span><b style="background:${c}"></b>${label} ${fmt(by[k])}</span>`).join("");
-  $("totals-note").textContent = t.counted_at
-    ? "Active accounts with a handle claim. Counted " + ago(t.counted_at, now) + ". A handle claimed by very many accounts, as in a spam wave, is checked once for all of them; those accounts are counted apart."
+  $("totals-note").textContent = t.recounted_at
+    ? "Active accounts with a handle claim, kept live and checked against a full count regularly (last" + ago(t.recounted_at, now) + "). A handle claimed by very many accounts, as in a spam wave, is checked once for all of them; those accounts are counted apart."
     : "The first count is running.";
 
   // The weekly sweep.

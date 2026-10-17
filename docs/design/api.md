@@ -314,8 +314,15 @@ It is built to be public:
 - **Flat load.** Its figures are read at most once every 30 seconds and
   every viewer gets that reading, so the database's work does not grow
   with the page's audience.
-- **Totals in the background.** The handle totals need a pass over every
-  account, so they are counted hourly by default
-  (`LODESTAR_STATUS_TOTALS_MINUTES`), never for a request. Claimants of a
+- **Live totals.** Counting the handle totals takes a pass over every
+  account, so they are kept instead: triggers on `accounts`, `listed`
+  and `shared_handles` add what each statement changed to
+  `live_counts`, in the statement's own transaction, and the page sums
+  those rows. The rows are only ever inserted, so writers never wait on
+  each other; the API role folds them together every minute. Hourly by
+  default (`LODESTAR_STATUS_TOTALS_MINUTES`) it recounts from the
+  tables in one snapshot and puts the count in their place, which
+  corrects the one change the triggers cannot see cheaply: a handle
+  newly found shared, which moves all its claimants. Claimants of a
   shared handle are counted apart, since their own rows never record a
   check.

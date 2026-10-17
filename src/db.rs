@@ -175,6 +175,69 @@ CREATE TABLE IF NOT EXISTS shared_handles (
     did              bytea
 );
 
+-- The status page's totals, kept live: each row is what one statement
+-- changed, written by the triggers below in the statement's own
+-- transaction, so the rows always sum to the truth. Only ever inserted
+-- into, so writers never wait on each other; the API role folds the rows
+-- together now and then, and recounts from the tables to replace them.
+-- kind: 0 accounts, by status, handle status and whether the account
+-- claims a shared handle it does not hold; 1 listed DIDs.
+CREATE TABLE IF NOT EXISTS live_counts (
+    n             bigint NOT NULL,
+    kind          smallint NOT NULL,
+    status        smallint,
+    handle_status smallint,
+    shared        boolean
+);
+
+CREATE OR REPLACE FUNCTION lodestar_count_accounts() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO live_counts (n, kind, status, handle_status, shared)
+        SELECT count(*), 0, a.status, a.handle_status, s.handle IS NOT NULL
+        FROM new_rows a LEFT JOIN shared_handles s ON s.handle = a.handle_claim AND s.did IS DISTINCT FROM a.did
+        GROUP BY 3, 4, 5;
+    ELSE
+        INSERT INTO live_counts (n, kind, status, handle_status, shared)
+        SELECT sum(c.n), 0, c.status, c.handle_status, s.handle IS NOT NULL
+        FROM (SELECT 1 AS n, status, handle_status, handle_claim, did FROM new_rows
+              UNION ALL
+              SELECT -1, status, handle_status, handle_claim, did FROM old_rows) c
+        LEFT JOIN shared_handles s ON s.handle = c.handle_claim AND s.did IS DISTINCT FROM c.did
+        GROUP BY 3, 4, 5 HAVING sum(c.n) <> 0;
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER accounts_count_insert AFTER INSERT ON accounts
+    REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION lodestar_count_accounts();
+CREATE OR REPLACE TRIGGER accounts_count_update AFTER UPDATE ON accounts
+    REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION lodestar_count_accounts();
+
+CREATE OR REPLACE FUNCTION lodestar_count_listed() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO live_counts (n, kind) SELECT count(*), 1 FROM new_rows HAVING count(*) > 0;
+    RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER listed_count AFTER INSERT ON listed
+    REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION lodestar_count_listed();
+
+-- A shared handle that names a new holder: the old holder becomes one
+-- claimant among the rest, and the new one stops being one. A handle
+-- newly found shared moves all its claimants, which only a scan could
+-- count; the recount puts that right.
+CREATE OR REPLACE FUNCTION lodestar_count_holder() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO live_counts (n, kind, status, handle_status, shared)
+    SELECT m.n, 0, a.status, a.handle_status, m.shared
+    FROM (VALUES (OLD.did, -1::bigint, false), (OLD.did, 1::bigint, true),
+                 (NEW.did, -1::bigint, true), (NEW.did, 1::bigint, false)) AS m (did, n, shared)
+    JOIN accounts a ON a.did = m.did
+    WHERE a.handle_claim = NEW.handle;
+    RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER shared_handles_count_holder AFTER UPDATE OF did ON shared_handles
+    FOR EACH ROW WHEN (OLD.did IS DISTINCT FROM NEW.did) EXECUTE FUNCTION lodestar_count_holder();
+
 -- What lodestar remembers about each control check, so a restart changes
 -- nothing: since when it has failed every round, and whether it has been
 -- left out of the count.

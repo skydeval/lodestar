@@ -108,6 +108,15 @@ between them, so this table is tiny and saves that many checks. See
 | `resolve_requests` | Live lookups the API is waiting on, and their answers. Short-lived. |
 | `role_status` | The verification role's own report, for health. |
 
+### `live_counts`: the status page's totals
+
+What each statement changed in the totals, written by triggers on
+`accounts`, `listed` and `shared_handles` in the statement's own
+transaction: a count, by status, handle status and whether the
+account claims a shared handle it does not hold, or of listed DIDs.
+The page sums the rows. Folded together every minute and replaced by a
+full count hourly ([API](api.md)), so it stays a few dozen rows.
+
 ### `sync_state`
 
 One row for each source, walk, lap and pause: its position, its phase,

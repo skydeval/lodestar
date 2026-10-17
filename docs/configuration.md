@@ -39,7 +39,7 @@ list is comma-separated.
 | `LODESTAR_LIVE_DEADLINE_SECONDS` | api | 5 | how long a lookup waits on a live check |
 | `LODESTAR_CONSUMER_QUEUE_CAP` | api | 10000 | most consumer-requested checks waiting, per kind |
 | `LODESTAR_STATUS_LISTEN` | api | `0.0.0.0:8090` in compose, off otherwise | where the status page listens inside its container; empty turns it off |
-| `LODESTAR_STATUS_TOTALS_MINUTES` | api | 60 | how often the status page's totals are counted; each count reads all of `accounts` |
+| `LODESTAR_STATUS_TOTALS_MINUTES` | api | 60 | how often the status page's live totals are checked against a full count; each count reads all of `accounts` |
 
 `LODESTAR_API_BIND`, `LODESTAR_STATUS_BIND` and `POSTGRES_PASSWORD`
 are read by `compose.yaml` itself, as are the bundled Caddy's two

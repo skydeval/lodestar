@@ -151,7 +151,8 @@ Work towards 0.1.0.
 - A read-only status page at `/status/`, served by the api role on an
   address of its own (`LODESTAR_STATUS_LISTEN`), on by default in
   compose. It shows the sync position, the streams, verification and
-  totals counted hourly in the background, and serves nothing else;
+  live totals, kept by triggers and checked against a full count
+  hourly, and serves nothing else;
   the control handles and the domains appear only as counts, so it
   can be made public while the API stays private. Its figures are
   read at most once every 30 seconds, however many people view it.
