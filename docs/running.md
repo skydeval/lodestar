@@ -24,7 +24,10 @@ Caddy. To build the image from the checkout instead, run
 - `LODESTAR_CONTROLS`, the control checks. See below.
 
 Every other setting has a default that suits the reference host; see
-[configuration](configuration.md).
+[configuration](configuration.md). In particular, leave
+`LODESTAR_RESOLVER` unset: verification then uses the host's own DNS
+resolver, which holds up under its load better than a public one asked
+directly ([why](design/deployment.md#dns)).
 
 The API and the status page listen on the host's loopback
 (`127.0.0.1:8080` and `:8090`); the public reaches them through Caddy

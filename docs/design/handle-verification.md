@@ -272,9 +272,11 @@ decides nothing, the IPv4 address, and the IPv6 address only if there
 is no IPv4 one. At the default rates that is up to about 1,200 queries
 a second. A public resolver typically serves one address up to about
 1,500 a second and drops or fails the rest, and each failure is an
-inconclusive check. The verification role warns at start-up when its
-rates could pass 1,400. See [Deployment](deployment.md#dns) for
-choosing a resolver.
+inconclusive check, and a resolver asked directly can also stall for
+minutes under sustained load. The verification role warns at start-up
+when its rates could pass 1,400. See [Deployment](deployment.md#dns)
+for choosing a resolver; the default, the host's own, is the one to
+start with.
 
 ## Pauses
 

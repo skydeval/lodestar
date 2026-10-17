@@ -254,7 +254,9 @@ Work towards 0.1.0.
   address about 1,500 a second and drops the rest: measured, Google's
   answered everything up to 1,500 a second and dropped a fifth at
   2,000, and Cloudflare's answered a fifth to a third with `SERVFAIL`
-  from 1,000.
+  from 1,000. Under hours of load, Google's IPv4 addresses asked
+  directly also stalled for minutes at a time; the default, `system`,
+  did not, and the docs now say to keep it.
 
 ### Fixed
 

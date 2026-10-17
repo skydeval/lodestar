@@ -83,13 +83,23 @@ three queries per check, about 1,200 a second at the default rates.
   answered cleanly up to about 600 a second and from 1,000 a second
   failed a fifth to a third of queries with `SERVFAIL`. Every dropped or
   failed query is an inconclusive check.
+- **Short tests don't show everything.** Under hours of sweep load, the
+  reference host's queries sent straight to Google's IPv4 addresses
+  stopped being answered for a few minutes about every 22 minutes, well
+  under the rate above. Each stall failed most checks in flight and
+  paused the busiest domains. The same resolver, reached through the
+  host's own resolver over IPv6, never stalled.
+- **So start with `system`**, the default: Docker's resolver, then the
+  host's. Set `LODESTAR_RESOLVER` only to a resolver you have watched
+  under sweep load for an hour or more, with `failing_why` in health
+  showing few `dns failed` or `address lookup failed`.
 - **Resolvers that block domains are unsuitable.** A resolver that
   answers a blocked domain with "no such domain" makes lodestar record
   those handles as resolving to nothing.
-- **The container path costs CPU.** By default a container's queries go
-  through Docker's resolver and often the host's own stub resolver.
-  `LODESTAR_RESOLVER` points verification at resolvers directly, several
-  separated by commas, which skips both.
+- **The container path costs some CPU**, as each query passes through
+  Docker's resolver and often the host's stub resolver. At the default
+  rates that cost is small. `LODESTAR_RESOLVER` skips both, pointing
+  verification at resolvers directly, several separated by commas.
 - **Lodestar warns at start-up** when its rates could pass about 1,400
   queries a second.
 

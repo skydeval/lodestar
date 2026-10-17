@@ -50,4 +50,7 @@ A resolver at one address is asked about three queries per check at
 the most, so the default global rate of 400 checks a second can
 reach 1,200 a second. Public resolvers serve one address about
 1,500 a second and drop the rest; verification warns at start-up
-when its rates could pass 1,400.
+when its rates could pass 1,400. Keep `system` unless you have a
+reason not to: a public resolver asked directly can stall under
+hours of load at rates it handles in a short test (see
+[Deployment](design/deployment.md#dns)).
