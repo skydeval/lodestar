@@ -258,10 +258,13 @@ async fn merge(client: &mut Client) -> Result<()> {
     tx.batch_execute("SET LOCAL enable_nestloop = off").await?;
     let marked = tx
         .execute(
+            // A Jetstream account event can list one of these while the
+            // merge runs; that one is already marked.
             "INSERT INTO listed (did) \
              SELECT s.did FROM (SELECT DISTINCT did FROM walk_seen) s \
              WHERE NOT EXISTS (SELECT 1 FROM listed l WHERE l.did = s.did) \
-             ORDER BY s.did",
+             ORDER BY s.did \
+             ON CONFLICT (did) DO NOTHING",
             &[],
         )
         .await

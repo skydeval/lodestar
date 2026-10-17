@@ -8,7 +8,7 @@
 //! queue. A large domain has a walker of its own, which does wait, and is
 //! paced by that domain's rate.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -40,6 +40,40 @@ pub struct Opts {
 const LOOK: Duration = Duration::from_secs(30);
 /// Identities read from `listed` at a time in the first pass.
 const LISTED_PAGE: i64 = 2000;
+/// Pages whose checks may be under way at once. A page's slowest check
+/// (a timeout, a provider's stall) then holds back only its own page's
+/// position, not the next pages' checks; the pace is the domain's rate.
+const PIPELINE: usize = 8;
+
+/// Where a lap is, saved once every check before it has finished.
+enum Mark {
+    Listed(Vec<u8>),
+    Block(i64),
+}
+
+/// A page's checks, and where the lap is once they have all finished.
+type Page = (JoinSet<Result<()>>, Mark);
+
+/// Wait for the rest of a page's checks.
+async fn finish(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
+    while let Some(done) = tasks.join_next().await {
+        if let Err(e) = done? {
+            tracing::warn!("a lap check could not be applied: {e:#}");
+        }
+    }
+    Ok(())
+}
+
+/// Collect a page's checks that have finished, without waiting. True once
+/// all have.
+fn finished(tasks: &mut JoinSet<Result<()>>) -> Result<bool> {
+    while let Some(done) = tasks.try_join_next() {
+        if let Err(e) = done? {
+            tracing::warn!("a lap check could not be applied: {e:#}");
+        }
+    }
+    Ok(tasks.is_empty())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
@@ -86,12 +120,48 @@ impl Lap<'_> {
         Ok(())
     }
 
-    /// Check the due accounts read. False if asked to stop.
+    /// Save where the lap is.
+    async fn save_mark(&self, mark: &Mark) -> Result<()> {
+        match mark {
+            Mark::Listed(key) => self
+                .client
+                .execute(
+                    "UPDATE sync_state SET phase = 'listed', position = $2 WHERE source = $1",
+                    &[&self.source, &hex(key)],
+                )
+                .await
+                .map(|_| ())
+                .context("saving the lap's position"),
+            Mark::Block(block) => self.save(Pass::All.name(), *block).await,
+        }
+    }
+
+    /// Save the position of each page at the front whose checks have all
+    /// finished, waiting for the oldest while more than `keep` are under
+    /// way.
+    async fn settle(&self, pages: &mut VecDeque<Page>, keep: usize) -> Result<()> {
+        loop {
+            let over = pages.len() > keep;
+            let Some((tasks, _)) = pages.front_mut() else {
+                break;
+            };
+            if over {
+                finish(tasks).await?;
+            } else if !finished(tasks)? {
+                break;
+            }
+            let (_, mark) = pages.pop_front().expect("a page at the front");
+            self.save_mark(&mark).await?;
+        }
+        Ok(())
+    }
+
+    /// Start the checks of the due accounts read. None if asked to stop.
     async fn check(
         &mut self,
         rows: Vec<tokio_postgres::Row>,
         stop: &mut watch::Receiver<bool>,
-    ) -> Result<bool> {
+    ) -> Result<Option<JoinSet<Result<()>>>> {
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
         let mut overflow: Vec<(Vec<u8>, String)> = Vec::new();
         for r in rows {
@@ -135,7 +205,7 @@ impl Lap<'_> {
                     Admit::Wait if !walker => break None,
                     Admit::Wait => {
                         tokio::select! {
-                            _ = stop.changed() => return Ok(false),
+                            _ = stop.changed() => return Ok(None),
                             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                         }
                     }
@@ -148,7 +218,7 @@ impl Lap<'_> {
             let permit = if walker {
                 // A large domain's walker waits for its domain's rate.
                 tokio::select! {
-                    _ = stop.changed() => return Ok(false),
+                    _ = stop.changed() => return Ok(None),
                     p = self.shared.limiter.acquire(&domain) => p,
                 }
             } else {
@@ -189,13 +259,8 @@ impl Lap<'_> {
                 .lap_overflow
                 .fetch_add(overflow.len() as u64, Ordering::Relaxed);
         }
-        // The position moves on only once this stretch's results are in.
-        while let Some(done) = tasks.join_next().await {
-            if let Err(e) = done? {
-                tracing::warn!("a lap check could not be applied: {e:#}");
-            }
-        }
-        Ok(true)
+        // The caller moves the position on once this page's results are in.
+        Ok(Some(tasks))
     }
 
     /// The first pass: `listed` in key order, from after `after`. False
@@ -206,6 +271,7 @@ impl Lap<'_> {
         lap_started: f64,
         stop: &mut watch::Receiver<bool>,
     ) -> Result<bool> {
+        let mut pages: VecDeque<Page> = VecDeque::new();
         loop {
             tokio::select! {
                 _ = stop.changed() => return Ok(false),
@@ -213,19 +279,15 @@ impl Lap<'_> {
             }
             let (rows, last) = due_in_listed(&self.client, &after, lap_started).await?;
             let Some(last) = last else {
+                self.settle(&mut pages, 0).await?;
                 return Ok(true);
             };
-            if !self.check(rows, stop).await? {
+            let Some(tasks) = self.check(rows, stop).await? else {
                 return Ok(false);
-            }
+            };
+            pages.push_back((tasks, Mark::Listed(last.clone())));
+            self.settle(&mut pages, PIPELINE).await?;
             after = last;
-            self.client
-                .execute(
-                    "UPDATE sync_state SET phase = 'listed', position = $2 WHERE source = $1",
-                    &[&self.source, &hex(&after)],
-                )
-                .await
-                .context("saving the lap's position")?;
             if *stop.borrow() {
                 return Ok(false);
             }
@@ -240,6 +302,7 @@ impl Lap<'_> {
         lap_started: f64,
         stop: &mut watch::Receiver<bool>,
     ) -> Result<bool> {
+        let mut pages: VecDeque<Page> = VecDeque::new();
         loop {
             // The table grows while a lap runs.
             let blocks: i64 = self
@@ -248,6 +311,7 @@ impl Lap<'_> {
                 .await?
                 .get(0);
             if block >= blocks {
+                self.settle(&mut pages, 0).await?;
                 return Ok(true);
             }
             // While verification is paused a lap waits where it is.
@@ -257,11 +321,12 @@ impl Lap<'_> {
             }
             let to = (block + self.opts.chunk_blocks).min(blocks);
             let rows = due_in_blocks(&self.client, block, to, lap_started).await?;
-            if !self.check(rows, stop).await? {
+            let Some(tasks) = self.check(rows, stop).await? else {
                 return Ok(false);
-            }
+            };
+            pages.push_back((tasks, Mark::Block(to)));
+            self.settle(&mut pages, PIPELINE).await?;
             block = to;
-            self.save(Pass::All.name(), block).await?;
             if *stop.borrow() {
                 return Ok(false);
             }

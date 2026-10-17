@@ -86,6 +86,8 @@ pub(super) struct Counts {
     pub(super) lap_checks: AtomicU64,
     pub(super) lap_overflow: AtomicU64,
     documents: AtomicU64,
+    /// Inconclusive results by why, from every kind of check.
+    failing_why: std::sync::Mutex<std::collections::BTreeMap<&'static str, u64>>,
 }
 
 pub(super) struct Shared {
@@ -130,6 +132,15 @@ impl Shared {
             self.checker.check(claim).await
         };
         self.limiter.answered(domain, how_it_answered(&found));
+        if let super::check::Outcome::Inconclusive(why) = found.outcome {
+            *self
+                .counts
+                .failing_why
+                .lock()
+                .expect("failing_why lock")
+                .entry(why)
+                .or_default() += 1;
+        }
         if !matches!(found.outcome, super::check::Outcome::Inconclusive(_)) {
             // A conclusive answer ends the slow pace after a hold.
             self.limiter.unslow(domain);
@@ -944,7 +955,9 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             _ = report.tick() => {
                 let c = &shared.counts;
                 let (failing_domains, nothing_domains) = shared.pauses.lock().expect("pauses lock").paused();
+                let failing_why = c.failing_why.lock().expect("failing_why lock").clone();
                 let status = serde_json::json!({
+                    "failing_why": failing_why,
                     "paused_by_controls": !shared.gate.is_open(),
                     "checks": {
                         "verified": c.verified.load(Ordering::Relaxed),
@@ -983,6 +996,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     lap_overflow = c.lap_overflow.load(Ordering::Relaxed),
                     documents = c.documents.load(Ordering::Relaxed),
                     in_flight = running.keys.len(),
+                    failing_why = ?failing_why,
                     "verification"
                 );
             }

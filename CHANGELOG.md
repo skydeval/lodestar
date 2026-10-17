@@ -287,6 +287,14 @@ Work towards 0.1.0.
   reference host's disk. Parts that differ only in their names are now
   kept only for identities with a repo; extra keys and services are
   kept for all. The document pass runs again under the new rule.
+- A lap waited for every check on a page before reading the next, so
+  one slow check held back the whole sweep: about 80 checks a second
+  on a new copy. Up to eight pages are now under way at once, and the
+  position moves on as pages finish.
+- The relay walk's merge could collide with a Jetstream account event
+  listing the same identity, and stopped the ingest role.
+- Verification reports why checks failed (timed out, DNS failed, TLS
+  failed and so on), in its minute log line and in health.
 - On a new copy, a second Jetstream subscription took the first one's
   placeholder position of 0 as a real time, and was refused for ever.
   A subscription that has seen no event now has no position, and a
