@@ -78,6 +78,49 @@ made during the run, and each failed attempt left 20 million dead rows
 in `listed`. Compacting the table (`VACUUM FULL listed`) during the
 sweep took the database from 35.1 GB to 27.6 GB.
 
+## Serving a consumer
+
+Measured on 19 October 2026 by [Farsight](../README.md#consumers),
+which reads identities from lodestar, against a public lodestar
+instance behind Cloudflare. Lodestar ran in two places in turn: across
+the continent from Farsight (56 ms round trip), and in the same
+datacenter. The sample was 37 `did:plc` accounts Farsight holds
+(labelers, accounts whose handle or PDS changed, accounts that never
+changed, accounts deleted the day they were made), each timed as a
+first request on a new connection.
+
+| Median / p90 | plc.directory and Farsight's own checks | Lodestar, far | Lodestar, same datacenter |
+|---|---|---|---|
+| Handle check | 241 / 387 ms | 81 / 88 ms | 24 / 32 ms |
+| History (`/log/audit`, or lodestar's `/account/{did}/history`) | 72 / 74 ms | 80 / 88 ms | 24 / 33 ms |
+
+On a reused connection, lodestar in the same datacenter answered
+`/account/{did}` in 9 ms, against 24 ms for plc.directory's audit log
+and 75 to 85 ms for the far lodestar.
+
+- **Handle checks about 10 times faster** with lodestar in the same
+  datacenter: one read of lodestar's verified answer replaces reading
+  the DID document and resolving the handle (DNS, then the handle's own
+  server).
+- **Batches.** `POST /accounts` with 1,000 DIDs, one request a second,
+  let Farsight bring 1.1 million stored handles up to date in 35
+  minutes, with no requests to any other server. Farsight's own writes
+  were the limit.
+- **Not everything gets faster.** Farsight's pages for accounts whose
+  handle it already stores, and for its largest accounts, are dominated
+  by its own work and barely changed. A far lodestar made its cheapest
+  reads slower than plc.directory.
+- **Correctness.** For 34 of the 37 accounts, lodestar's verified
+  handle, PDS, creation date and whole handle and PDS history matched
+  plc.directory and Farsight's own checks exactly, and the pages
+  Farsight drew were identical byte for byte. The other 3 were accounts
+  deleted the day they were made: lodestar had verified their handles
+  seconds after they were created, and reports them verified until its
+  weekly check. A tombstoned DID read the same as from plc.directory.
+
+Not measured: lodestar under more load than one consumer, and `did:web`
+beyond three samples, which neither lodestar nor Farsight could read.
+
 ## After the first run
 
 Every handle is checked again once a week, and a changed handle is

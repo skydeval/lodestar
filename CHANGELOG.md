@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The README names lodestar's consumers, starting with Farsight. The
+  measurements cover serving one: Farsight's handle checks about 10
+  times faster with lodestar in the same datacenter, and what distance
+  costs. The deployment design says where to place lodestar, why to
+  give its name an IPv4 address, and how not to expose the server
+  behind a CDN.
+
 ### Fixed
 
 - The status page's note on the totals ran "last" into the time since

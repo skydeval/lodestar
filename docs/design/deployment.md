@@ -107,6 +107,27 @@ three queries per check, about 1,200 a second at the default rates.
 An operator who raises the rates past that needs a resolver without a
 per-client cap, such as a recursive resolver of their own.
 
+## Placement
+
+Most of what a lookup costs a consumer is the distance to lodestar.
+Measured with Farsight as the consumer
+([measurements](../measurements.md#serving-a-consumer)), lodestar in
+the same datacenter answered `GET /account/{did}` in a median of 24 ms
+on a new connection and 9 ms on a reused one. From across the continent
+(56 ms round trip) it took about 80 ms, longer than plc.directory took
+for the same reads.
+
+- **Run lodestar in the same datacenter as its consumers**, or as near
+  as you can. A distant lodestar still saves a consumer its own handle
+  checks, which take hundreds of milliseconds, but makes its cheapest
+  reads slower.
+- **Give lodestar's name an IPv4 address.** IPv6 between neighbouring
+  servers may not work: a provider can isolate servers that share a
+  /64 while their default route treats it as on-link, so neighbours get
+  "host unreachable". Docker containers also have no IPv6 by default,
+  so a name with only an IPv6 address is unreachable from a consumer
+  running in Docker.
+
 ## Going public
 
 The read API and the status page are meant to be public; the ops
@@ -136,7 +157,16 @@ Caddyfile's rules into yours, with `127.0.0.1:8080` and
 **Behind a CDN** such as Cloudflare's proxy, the CDN is the place for
 rate limits on the public API; lodestar has none of its own. To keep the
 CDN's proxying on, give Caddy a certificate the CDN trusts, such as an
-origin certificate, through the Caddyfile's `tls` line.
+origin certificate, in `certs/` ([Running lodestar](../running.md#going-public)).
+With the consumer in the same datacenter the CDN cost little: 9 ms for
+a lookup on a reused connection.
+
+Don't add a DNS-only name for the same server to skip the CDN. It
+publishes the address the proxied name hides, and certificate
+transparency logs make new names easy to find. If the server's address
+has been published, accept ports 80 and 443 only from the CDN's address
+ranges at the firewall; a rule in the CDN alone still lets traffic
+reach the server directly.
 
 ## Maintenance
 

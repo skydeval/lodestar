@@ -60,6 +60,17 @@ docker compose up -d
 including how to choose the control checks, and how to put it on your
 own domain.
 
+## Consumers
+
+- [Farsight](https://github.com/skydeval/farsight), from its 0.7.0,
+  reads DID resolution, verified handles and identity history from
+  lodestar, and falls back to `plc.directory` for anything lodestar
+  cannot answer. With lodestar in the same datacenter, its handle checks
+  are about 10 times faster
+  ([measurements](docs/measurements.md#serving-a-consumer)). Farsight
+  documents its side in its
+  [`docs/design/lodestar.md`](https://github.com/skydeval/farsight/blob/main/docs/design/lodestar.md).
+
 ## Documentation
 
 | | |
