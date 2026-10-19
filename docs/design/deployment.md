@@ -19,7 +19,7 @@ From an empty database, on that host in October 2026
 |---|---|
 | First sync of the PLC directory | about 9 hours |
 | Relay walk | about 1.5 hours |
-| First verification of every handle | about 43 hours |
+| First verification of every handle | about 40 hours |
 
 The first sync is paced by the directory, not by the host. The first
 verification is paced by the rate toward the largest provider.
@@ -38,7 +38,7 @@ yet with `syncing`.
 | Logs | about 1 GiB |
 | Free at the worst moment | about 26 GiB |
 
-After the first sweep the database settles at about 28 GB. The
+After the first sweep the database settles at about 27 GB. The
 directory grows by roughly 100,000 to 250,000 identities a day, which
 is about 1 GiB a month in lodestar's schema. Growth is driven mostly by
 bulk registration, so it can change without warning.

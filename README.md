@@ -21,7 +21,7 @@ passes only the read paths (see
 [Going public](docs/running.md#going-public)). There is no
 authentication, and nothing public can change anything.
 
-**Status:** 0.1 is in progress. See `CHANGELOG.md`.
+**Status:** 0.1.0, the first release. See `CHANGELOG.md`.
 
 ## What it needs
 
@@ -33,7 +33,7 @@ authentication, and nothing public can change anything.
 
 On the reference host in October 2026, the first sync of the PLC
 directory took 9 hours, and verifying every handle on the network
-after it took 43 hours. See [docs/measurements.md](docs/measurements.md).
+after it took 40 hours. See [docs/measurements.md](docs/measurements.md).
 
 ## Roles
 

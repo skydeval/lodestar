@@ -16,7 +16,7 @@ released image and the compose file's defaults.
 | First sync of the PLC directory | 16 Oct 20:23 to 17 Oct 05:40 | 9 hours 17 minutes |
 | Relay walk | 17 Oct 05:42 to 07:20 | 1 hour 38 minutes |
 | Document pass | 17 Oct 07:22 to about 16:50 | about 9 hours 30 minutes |
-| First sweep of every handle | 17 Oct 07:21 to TBD | TBD |
+| First sweep of every handle | 17 Oct 07:21 to 19 Oct 04:23 | 40 hours 14 minutes |
 
 - **Sync:** about 130.4 million operations, giving about 124.1 million
   identities, at about 3,970 operations a second. That pace is the
@@ -32,20 +32,24 @@ released image and the compose file's defaults.
   fixes made during this run: the sweep waited on each page's slowest
   check, and the DNS resolver had been set to Google's IPv4 addresses
   directly, which stalled every 22 minutes or so. With both fixed from
-  the start, expect the sweep to take a couple of hours less.
+  the start, expect the sweep to take a couple of hours less. The
+  same sweep took 43 hours a week earlier, before the fixes of this
+  run.
 
 ## What the first sweep found
 
+Active accounts that claim a handle of their own, just after the sweep:
+
 | Handle status | Accounts |
 |---|---|
-| Verified | TBD |
-| Mismatch: the handle points at another account | TBD |
-| Unresolved: the handle points at nothing | TBD |
-| Unreachable: the handle's domain did not answer | TBD |
-| Still being retried | TBD |
+| Verified | 45,756,458 |
+| Mismatch: the handle points at another account | 503,383 |
+| Unresolved: the handle points at nothing | 3,176,184 |
+| Unreachable: the handle's domain did not answer | 565,489 |
+| Still being retried | 201,221 |
 
-About 51 million more accounts claim one of a few handles claimed
-very widely, most of them `donald.trump.com` (48.9 million) and
+About 51 million more accounts claim one of 126 handles claimed very
+widely, most of them `donald.trump.com` (48.9 million) and
 `plc.surge.sh` (1.7 million). A handle claimed that widely is resolved
 once and its claimants take their status from it. About 23 million
 accounts claim no handle.
@@ -62,7 +66,7 @@ which is why some handles are still being retried after the sweep ends.
 |---|---|
 | After the first sync | 21 GB |
 | After the document pass | 30 GB |
-| After the first sweep | TBD |
+| After the first sweep | 27.3 GB |
 
 Most of the growth after the sync is the first sweep's writes: each
 check rewrites its account's row, and the space the old rows leave is

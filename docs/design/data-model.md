@@ -67,7 +67,7 @@ small inserts, not 20 million rewritten account rows.
 ### `pds_endpoints`
 
 Every distinct PDS endpoint, once, with an integer id. About 21,000
-endpoints serve about 123 million identities. Endpoints can be any
+endpoints serve about 124.7 million identities. Endpoints can be any
 length, so they are unique by their MD5.
 
 ### `doc_parts`: DID documents that need more than the columns
@@ -200,13 +200,14 @@ have grown them half again past their size after a rebuild
 
 ## Size
 
-On the reference host in October 2026, for about 123 million
+On the reference host in October 2026, for about 124.7 million
 identities:
 
 | | On disk |
 |---|---|
-| After the first sync and first verification | about 28 GB |
-| `accounts` with its indexes | about 26 GB of that |
+| After the first sync | about 21 GB |
+| After the first verification | about 27 GB |
+| `accounts` with its indexes | about 24 GB of that |
 | Peak during the first sync and sweep | about 32 GiB |
 
 The directory grows by roughly 100,000 to 250,000 identities a day,
