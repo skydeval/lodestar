@@ -6,8 +6,9 @@ reasoning and the budgets.
 
 ## The reference host
 
-Lodestar is designed for, and measured on, a VPS with a 75 GB SSD,
-8 GB of memory and 4 vCPUs, running nothing else, with the compose
+The whole network takes under 30 GB of database. Lodestar is measured
+on a VPS with 4 vCPUs, 8 GB of memory and a 75 GB SSD, running nothing
+else, with the compose
 file in this repository and the `vps` profile. Nothing else shares its
 disk or memory, so no other service can starve it.
 
@@ -29,7 +30,7 @@ yet with `syncing`.
 
 ## Disk
 
-| On a 75 GB disk (about 70 GiB usable) | |
+| On the reference host's 75 GB disk (about 70 GiB usable) | |
 |---|---|
 | Database at its peak, during the first sync and sweep | about 32 GiB |
 | Operating system, container runtime, images | about 7 GiB |

@@ -11,7 +11,7 @@ rebuild. **Instead of:** a full replica of the directory with its signed
 operation log.
 
 The signed operations are most of the directory's size. Without them the
-whole network fits in about 28 GB, on a 75 GB server, and lodestar can
+whole network fits in under 30 GB, and lodestar can
 still answer everything a service asks the directory in ordinary use:
 where an account lives, what key signs its data, its DID document, and
 what it has been called. What it gives up is the ability to audit an
@@ -59,7 +59,7 @@ operator the plain form when looking by hand.
 **Chosen:** one Postgres database for everything, including the queues
 between roles. **Instead of:** an embedded store, or a message queue.
 
-It works the same at 75 GB and at 10 TB, does not need the working set
+It works the same at 30 GB and at 10 TB, does not need the working set
 in memory, and makes every source's position transactional with the data
 it covers, which is what makes restarts exact. Using it for coordination
 means the roles need no other channel between them.

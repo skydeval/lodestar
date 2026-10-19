@@ -3,7 +3,7 @@
 Lodestar keeps everything in Postgres. Disk is the binding constraint
 at the small end, so the encodings below are not an option or an
 optimisation pass: they are the schema. With them the whole network
-fits in about 28 GB; with plain text and one history row per identity,
+fits in under 30 GB; with plain text and one history row per identity,
 the same data took 58 GiB.
 
 Columns in each table are ordered widest first, so rows carry no

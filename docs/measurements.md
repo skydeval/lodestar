@@ -68,6 +68,12 @@ Most of the growth after the sync is the first sweep's writes: each
 check rewrites its account's row, and the space the old rows leave is
 reused by later laps.
 
+The 30 GB includes about 7 GB that a correct install does not have.
+In this run the relay walk's merge failed several times before a fix
+made during the run, and each failed attempt left 20 million dead rows
+in `listed`. Compacting the table (`VACUUM FULL listed`) during the
+sweep took the database from 35.1 GB to 27.6 GB.
+
 ## After the first run
 
 Every handle is checked again once a week, and a changed handle is

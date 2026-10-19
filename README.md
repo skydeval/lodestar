@@ -1,7 +1,7 @@
 # lodestar
 
-A compact, read-only mirror of the PLC directory, small enough for a
-75 GB VPS. Lodestar keeps a copy of who every account on the ATProto
+A compact, read-only mirror of the PLC directory: the whole network in
+under 30 GB. Lodestar keeps a copy of who every account on the ATProto
 network is, so that services near it can ask it instead of asking
 `plc.directory` and the network each time:
 
@@ -26,9 +26,9 @@ authentication, and nothing public can change anything.
 ## What it needs
 
 - Postgres 16.
-- About 30 GB of disk for the whole network today, on an SSD, and
-  room for it to grow. The reference host is a VPS with a 75 GB disk,
-  8 GB of memory and 4 vCPUs.
+- Under 30 GB of disk for the whole network as of October 2026, on an
+  SSD, and room for it to grow. The reference host has 4 vCPUs, 8 GB
+  of memory and a 75 GB disk.
 - Outbound network access for two of its three roles.
 
 On the reference host in October 2026, the first sync of the PLC

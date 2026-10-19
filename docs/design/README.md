@@ -11,7 +11,7 @@ long things take on real hardware, see [measurements](../measurements.md).
 
 Lodestar is a **compact, read-only mirror of the PLC directory** for the
 ATProto network. It keeps a copy of every identity the directory holds,
-small enough to fit on a 75 GB server, and serves it to the services
+in under 30 GB, and serves it to the services
 near it, so that they can ask lodestar instead of asking
 `plc.directory` and the network each time.
 
@@ -57,7 +57,7 @@ firehose.
   reports it as the account's handle only when it resolves back.
 - **History for everyone.** Handle and PDS history is kept for every
   identity, not only for those someone has looked up.
-- **Small first.** The same design runs on a 75 GB VPS and on a much
+- **Small first.** The same design runs on a small VPS and on a much
   larger server. Everything that depends on scale is a setting, with
   defaults that work at the small end.
 - **A good neighbour.** Lodestar asks other people's servers a great

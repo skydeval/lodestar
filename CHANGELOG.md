@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-10-19
 
 The first release: a compact, read-only mirror of the PLC directory,
-with every handle verified, small enough for a 75 GB VPS.
+with every handle verified: the whole network in under 30 GB.
 
 ### Added
 
