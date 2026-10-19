@@ -147,7 +147,7 @@ function render(d) {
   $("status-legend").innerHTML = parts.filter(([k]) => by[k]).map(([k, label, c]) =>
     `<span><b style="background:${c}"></b>${label} ${fmt(by[k])}</span>`).join("");
   $("totals-note").textContent = t.recounted_at
-    ? "Active accounts with a handle claim, kept live and checked against a full count regularly (last" + ago(t.recounted_at, now) + "). A handle claimed by very many accounts, as in a spam wave, is checked once for all of them; those accounts are counted apart."
+    ? "Active accounts with a handle claim, kept live and checked against a full count regularly (last " + ago(t.recounted_at, now) + "). A handle claimed by very many accounts, as in a spam wave, is checked once for all of them; those accounts are counted apart."
     : "The first count is running.";
 
   // The weekly sweep.

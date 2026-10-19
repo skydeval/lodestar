@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The status page's note on the totals ran "last" into the time since
+  the last full count.
+
 ## [0.1.0] - 2026-10-19
 
 The first release: a compact, read-only mirror of the PLC directory,
