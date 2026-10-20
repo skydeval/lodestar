@@ -48,6 +48,8 @@ pub struct Opts {
     pub lookback: Duration,
     /// Rates and caps: a profile's, with the operator's overrides.
     pub limits: limiter::Limits,
+    /// The per-host walk. None leaves it off.
+    pub host_walk: Option<super::hostwalk::Opts>,
 }
 
 /// How many queued items are read at a time, and how many reads one pass
@@ -805,6 +807,16 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     // Rebuilds the accounts indexes when the laps have grown them.
     let client = db::connect(&opts.database_url).await?;
     laps.spawn(super::maintain::run(client, stop.clone()));
+    // Each host's own listing, for what the relay's listing lacks.
+    if let Some(walk) = &opts.host_walk {
+        let client = db::connect(&opts.database_url).await?;
+        laps.spawn(super::hostwalk::run(
+            shared.clone(),
+            client,
+            walk.clone(),
+            stop.clone(),
+        ));
+    }
 
     let mut running = Running {
         tasks: JoinSet::new(),

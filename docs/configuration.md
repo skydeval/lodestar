@@ -19,7 +19,7 @@ list is comma-separated.
 | `LODESTAR_JETSTREAM_URL` | ingest | Bluesky's east and west instances | the Jetstream instances, each subscribed to at once |
 | `LODESTAR_JETSTREAM_QUIET_SECONDS` | ingest | 300 | reconnect after this long without a message |
 | `LODESTAR_JETSTREAM_EVENT_CAP` | ingest | 10000 | most event checks that may wait in the queue |
-| `LODESTAR_RELAY_URL` | ingest | Bluesky's east and west relays | the relays a walk may use; it picks the fastest |
+| `LODESTAR_RELAY_URL` | ingest, verify | Bluesky's east and west relays | the relays a walk may use; the relay walk picks the fastest, the per-host walk reads its list of hosts from the first that answers |
 | `LODESTAR_WALK_MIN_INTERVAL_MS` | ingest | 250 | least time between listing requests |
 | `LODESTAR_WALK_EVERY_DAYS` | ingest | 7 | how often the relay walk runs again |
 | `LODESTAR_CONTROLS` | verify | none, required | the control checks |
@@ -30,6 +30,7 @@ list is comma-separated.
 | `LODESTAR_SHARED_THRESHOLD` | verify | 100 | a handle claimed by more identities is resolved once for all |
 | `LODESTAR_SHARED_REFRESH_MINUTES` | verify | 60 | least time between early refreshes of a shared handle |
 | `LODESTAR_LAP_CHUNK_BLOCKS` | verify | 500 | how much of `accounts` a lap reads at a time |
+| `LODESTAR_HOST_WALK` | verify | `true` | walk each host's own listing weekly, for repos and `did:web` accounts the relay lacks |
 | `LODESTAR_LOOKBACK_SECONDS` | verify | 600 | results this recent are checked again after a control pause |
 | `LODESTAR_VERIFY_CONNECTIONS` | verify | 8 | database connections for applying results |
 | `LODESTAR_LISTEN` | api | `127.0.0.1:8080` | where the API listens inside its container |

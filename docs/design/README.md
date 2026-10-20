@@ -83,7 +83,7 @@ firehose.
 | Document | Covers |
 |---|---|
 | [Architecture](architecture.md) | The three roles, how they coordinate, start-up order, packaging |
-| [Sources](sources.md) | The PLC directory, Jetstream, the relay walk, `did:web` documents, outbound safety |
+| [Sources](sources.md) | The PLC directory, Jetstream, the relay walk and the per-host walk, `did:web` documents, outbound safety |
 | [Data model](data-model.md) | Tables, the compact encodings, history, the verified-handle index |
 | [Handle verification](handle-verification.md) | Handle states, how a check works, when checks happen, politeness, pauses |
 | [API](api.md) | Endpoints, answers and errors, freshness, the DID document read, the status page |

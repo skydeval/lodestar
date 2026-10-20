@@ -5,6 +5,7 @@ pub mod check;
 pub mod control;
 pub mod decide;
 pub mod domains;
+pub mod hostwalk;
 pub mod lap;
 pub mod limiter;
 pub mod maintain;

@@ -447,6 +447,39 @@ impl Checker {
         (String::from_utf8(body).ok(), None)
     }
 
+    /// GET a listing (JSON) from a host lodestar does not control, behind
+    /// the address guard and the redirect rules, the body capped at `cap`
+    /// bytes. The body of a 2xx answer, or why there is none.
+    pub async fn get_listing(
+        &self,
+        url: reqwest::Url,
+        cap: usize,
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut resp = self.http.get(url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                "timed out"
+            } else {
+                "request failed"
+            }
+        })?;
+        if !resp.status().is_success() {
+            return Err("not 2xx");
+        }
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    body.extend_from_slice(&chunk);
+                    if body.len() > cap {
+                        return Err("too large");
+                    }
+                }
+                Ok(None) => return Ok(body),
+                Err(_) => return Err("body failed"),
+            }
+        }
+    }
+
     /// The whole procedure: DNS, then HTTPS if DNS has no record, unless
     /// HTTPS cannot answer for the handle (see [`https_can_answer`]).
     pub async fn check(&self, handle: &str) -> Check {

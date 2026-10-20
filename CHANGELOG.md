@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its own as soon as it is found, besides those named in
   `LODESTAR_LARGE_DOMAINS`. A walker's lap left from a domain no longer
   large is dropped.
+- The per-host walk: weekly, after the relay walk, the verification role
+  reads the relay's list of hosts and then each host's own `listRepos`,
+  for repos and `did:web` accounts the relay's listing lacks. Behind the
+  address guard and each domain's rate; it marks only identities
+  lodestar holds, queues at most 1,000 unseen `did:web` documents and
+  reads at most 1,000 pages per host, and keeps its place host by host.
+  On by default; `LODESTAR_HOST_WALK=false` turns it off.
 - The README names lodestar's consumers, starting with Farsight. The
   measurements cover serving one: Farsight's handle checks about 10
   times faster with lodestar in the same datacenter, and what distance

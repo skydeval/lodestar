@@ -148,7 +148,7 @@ priority order. A lower number is served first.
 | 21 | **A consumer asked for a refresh** of an account. | api |
 | 30 | **A batch lookup** included accounts whose handles are due. | api |
 | 31 | **An identity event** named the account. | ingest |
-| 32 | **The relay walk** found an unseen `did:web`. | ingest |
+| 32 | **The relay walk, or the per-host walk,** found an unseen `did:web`. | ingest, verify |
 | 40 | **A retry** of a failing check. | verify |
 | 41 | **A confirming check** of a verified handle. | verify |
 | 42 | **Lap overflow**: the sweep reached a handle whose domain had no budget left. | verify |

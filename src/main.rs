@@ -151,6 +151,18 @@ enum Cmd {
         /// How much of the accounts table a lap reads at a time, in blocks.
         #[arg(long, env = "LODESTAR_LAP_CHUNK_BLOCKS", default_value_t = 500)]
         lap_chunk_blocks: i64,
+        /// Walk each host's own listing too, weekly, for repos and did:web
+        /// accounts the relay's listing lacks.
+        #[arg(long, env = "LODESTAR_HOST_WALK", default_value_t = true, action = clap::ArgAction::Set)]
+        host_walk: bool,
+        /// The relays whose list of hosts the per-host walk reads,
+        /// separated by commas; the first that answers is used.
+        #[arg(
+            long = "host-walk-relay",
+            env = "LODESTAR_RELAY_URL",
+            default_value = "https://relay1.us-east.bsky.network,https://relay1.us-west.bsky.network"
+        )]
+        host_walk_relays: String,
         /// A control check, as dns:handle=did or https:handle=did. At
         /// least two of each method are needed, each on its own domain.
         #[arg(long = "control", env = "LODESTAR_CONTROLS", value_delimiter = ',')]
@@ -294,6 +306,8 @@ async fn main() -> Result<()> {
             shared_refresh_minutes,
             large_domains,
             lap_chunk_blocks,
+            host_walk,
+            host_walk_relays,
             controls,
             unsafe_no_controls,
             lookback_seconds,
@@ -332,6 +346,14 @@ async fn main() -> Result<()> {
                 controls,
                 lookback: Duration::from_secs(lookback_seconds),
                 limits,
+                host_walk: host_walk.then(|| verify::hostwalk::Opts {
+                    relays: host_walk_relays
+                        .split(',')
+                        .map(|s| s.trim().trim_end_matches('/').to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    every: Duration::from_secs(7 * 24 * 3600),
+                }),
             };
             verify::worker::run(opts, ingest::stop_signal()).await?;
         }

@@ -242,6 +242,26 @@ lists every `did:web`, which has no registry: a `did:web` no source has
 shown is resolved the first time someone asks for it
 ([API](api.md#get-accountdid)).
 
+## The per-host walk
+
+What a relay's listing lacks, a host may still list itself: a host the
+relay has stopped crawling, or repos it never picked up. So the
+verification role also reads the relay's `com.atproto.sync.listHosts`
+(about 6,300 active hosts) and then each host's own `listRepos`, a
+thousand per page.
+
+- **Where.** In the verification role, not ingest: these requests go to
+  hosts lodestar does not control, so they go through the same address
+  guard as a handle check ([Outbound safety](#outbound-safety)) and under
+  each host's registrable domain's rate.
+- **What a host is believed.** Only identities lodestar already holds
+  are marked as listed, so a host cannot add DIDs that do not exist. At
+  most 1,000 unseen `did:web` accounts from one host are queued for a
+  document fetch, and at most 1,000 pages of one host are read.
+- **When.** Once the relay walk has run, then every 7 days. It keeps its
+  place host by host across restarts. `LODESTAR_HOST_WALK=false` turns
+  it off.
+
 ## `did:web` documents
 
 The verification role fetches `https://<host>/.well-known/did.json`. In
