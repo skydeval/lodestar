@@ -48,6 +48,13 @@ DNS decides when both exist, as the spec prefers. If DNS itself fails,
 the whole check fails: HTTPS is not used to decide while the preferred
 method's answer is unknown.
 
+**Handles HTTPS cannot answer.** `bsky.social` serves handles over HTTPS
+only one label deep: its certificate is a wildcard for `*.bsky.social`,
+so a handle such as `word.name.bsky.social` fails TLS on every attempt.
+Such a handle is decided by DNS alone, and with no record it resolves to
+nothing, instead of failing as inconclusive and being retried for a
+day. Spam waves register these by the hundred thousand.
+
 The rules in [Sources](sources.md#outbound-safety) apply to every
 request: public addresses only, HTTPS on 443, at most three redirects,
 time limits, a User-Agent naming the operator.
@@ -181,6 +188,15 @@ after the last one started.
 The sweep never waits for a domain that is out of budget, since that
 would stall every other domain. A handle it cannot check at once goes
 to the queue as lap overflow, and the sweep moves on.
+
+**Recent results.** Several identities can claim the same ordinary
+handle (fewer claimants than a shared handle has), and a lap tends to
+meet them close together. So the sweep keeps each handle's conclusive
+result for 10 minutes, at most 200,000 of them, and a lap's check of
+another claimant within that time uses it without a request. Only the
+sweep reads these: a consumer's lookup, a claim change, a retry or a
+confirming check always asks afresh, and so does a paused domain's
+probe. Health counts them as `lap_cached`.
 
 ### Large domains
 

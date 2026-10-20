@@ -16,16 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop two seconds short of what the PLC source has applied, so nothing
   can be committed behind a consumer's position. It reads along a new
   index, `accounts (created_at, did)`, about 6.2 GB for the whole
-  network, which the
-  verification role builds without blocking the first time it finds it
-  missing; until then the listing answers `unavailable`.
-
+  network, which the verification role builds without blocking the
+  first time it finds it missing; until then the listing answers
+  `unavailable`.
+- The sweep keeps each handle's conclusive result for 10 minutes and
+  answers other claimants of the same handle from it, without a request.
+  Only the sweep reads it. Health reports `lap_cached`.
 - The README names lodestar's consumers, starting with Farsight. The
   measurements cover serving one: Farsight's handle checks about 10
   times faster with lodestar in the same datacenter, and what distance
   costs. The deployment design says where to place lodestar, why to
   give its name an IPv4 address, and how not to expose the server
   behind a CDN.
+
+### Changed
+
+- A handle more than one label under `bsky.social` (such as
+  `word.name.bsky.social`, registered in bulk by spam waves) is decided
+  by its DNS record alone. Its HTTPS address fails TLS on every attempt,
+  since the provider's certificate covers one label; with no record it
+  now resolves to nothing at once, instead of failing and being retried
+  for a day. The first sweep met about 196,000 of them.
 
 ### Fixed
 

@@ -73,6 +73,43 @@ const RETRY_LOOK: Duration = Duration::from_secs(30);
 const REQUEST_LOOK: Duration = Duration::from_millis(100);
 /// How often shared handles are looked at.
 const SHARED_LOOK: Duration = Duration::from_secs(5);
+/// How long a handle's result may answer a lap's check of another account
+/// claiming it, and how many are kept.
+const LAP_CACHE_TTL: Duration = Duration::from_secs(600);
+const LAP_CACHE_CAP: usize = 200_000;
+
+/// Recent results by handle. Identities that claim the same ordinary
+/// handle (not shared: fewer claimants than the threshold) are often met
+/// close together by a lap, and share one lookup. Only laps read it: every
+/// other check needs a fresh resolution. Any conclusive result fills it.
+#[derive(Default)]
+pub(super) struct LapCache {
+    entries: std::sync::Mutex<HashMap<String, (Instant, super::check::Check)>>,
+}
+
+impl LapCache {
+    fn get(&self, handle: &str) -> Option<super::check::Check> {
+        let entries = self.entries.lock().expect("lap cache lock");
+        entries
+            .get(handle)
+            .filter(|(at, _)| at.elapsed() < LAP_CACHE_TTL)
+            .map(|(_, c)| c.clone())
+    }
+
+    fn put(&self, handle: &str, check: &super::check::Check) {
+        if matches!(check.outcome, Outcome::Inconclusive(_)) {
+            return;
+        }
+        let mut entries = self.entries.lock().expect("lap cache lock");
+        if entries.len() >= LAP_CACHE_CAP {
+            entries.retain(|_, (at, _)| at.elapsed() < LAP_CACHE_TTL);
+            if entries.len() >= LAP_CACHE_CAP {
+                entries.clear();
+            }
+        }
+        entries.insert(handle.to_owned(), (Instant::now(), check.clone()));
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Counts {
@@ -85,6 +122,8 @@ pub(super) struct Counts {
     shared_resolutions: AtomicU64,
     pub(super) lap_checks: AtomicU64,
     pub(super) lap_overflow: AtomicU64,
+    /// Lap checks answered from a recent result of the same handle.
+    lap_cached: AtomicU64,
     documents: AtomicU64,
     /// Inconclusive results by why, from every kind of check.
     failing_why: std::sync::Mutex<std::collections::BTreeMap<&'static str, u64>>,
@@ -104,6 +143,7 @@ pub(super) struct Shared {
     /// Set once claims have been counted with the PLC source at the tip.
     /// Until then no handle is checked.
     pub(super) claims_ready: AtomicBool,
+    pub(super) lap_cache: LapCache,
 }
 
 impl Shared {
@@ -264,7 +304,25 @@ pub(super) async fn check_one(
     how: How,
 ) -> Result<()> {
     let from_lap = held.is_some();
-    let Some(found) = shared.resolve(&claim, &domain, held).await else {
+    // A paused domain's probe is a test of the domain: it always asks.
+    let cached = if from_lap && !how.probe {
+        shared.lap_cache.get(&claim)
+    } else {
+        None
+    };
+    let from_cache = cached.is_some();
+    let found = if let Some(c) = cached {
+        // No request goes out, so the lap's slot for the domain is freed.
+        drop(held);
+        shared.counts.lap_cached.fetch_add(1, Ordering::Relaxed);
+        Some(c)
+    } else {
+        shared.resolve(&claim, &domain, held).await
+    };
+    if !from_cache && let Some(f) = &found {
+        shared.lap_cache.put(&claim, f);
+    }
+    let Some(found) = found else {
         // Dropped. A queued check keeps its row; a lap's check has none,
         // so it is queued to be made again.
         if from_lap {
@@ -340,23 +398,27 @@ pub(super) async fn check_one(
             };
             counter.fetch_add(1, Ordering::Relaxed);
             shared.gate.note(&did);
-            // A handle already known to be failing is not a first attempt,
-            // however its check came to be made.
-            let kind = if how.kind == Kind::First && (had_failure || was == db::HANDLE_UNREACHABLE)
-            {
-                Kind::Retry
-            } else {
-                how.kind
-            };
-            let changes = shared.pauses.lock().expect("pauses lock").record(
-                &domain,
-                kind,
-                was == db::HANDLE_VERIFIED,
-                answer,
-                how.probe,
-                at,
-            );
-            save_changes(&client, &changes).await?;
+            // A result reused from the cache is not news of the domain:
+            // the pauses heard it when it was made.
+            if !from_cache {
+                // A handle already known to be failing is not a first
+                // attempt, however its check came to be made.
+                let kind =
+                    if how.kind == Kind::First && (had_failure || was == db::HANDLE_UNREACHABLE) {
+                        Kind::Retry
+                    } else {
+                        how.kind
+                    };
+                let changes = shared.pauses.lock().expect("pauses lock").record(
+                    &domain,
+                    kind,
+                    was == db::HANDLE_VERIFIED,
+                    answer,
+                    how.probe,
+                    at,
+                );
+                save_changes(&client, &changes).await?;
+            }
             true
         }
         Applied::Stale => {
@@ -651,6 +713,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         next: AtomicUsize::new(0),
         counts: Counts::default(),
         claims_ready: AtomicBool::new(false),
+        lap_cache: LapCache::default(),
     });
     for domain in &released {
         shared.limiter.slow(domain);
@@ -970,6 +1033,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     "shared_resolutions": c.shared_resolutions.load(Ordering::Relaxed),
                     "lap_checks": c.lap_checks.load(Ordering::Relaxed),
                     "lap_overflow": c.lap_overflow.load(Ordering::Relaxed),
+                    "lap_cached": c.lap_cached.load(Ordering::Relaxed),
                     "documents": c.documents.load(Ordering::Relaxed),
                     "in_flight": running.keys.len(),
                     "domains_paused_failing": failing_domains,
@@ -994,6 +1058,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                     shared_resolutions = c.shared_resolutions.load(Ordering::Relaxed),
                     lap_checks = c.lap_checks.load(Ordering::Relaxed),
                     lap_overflow = c.lap_overflow.load(Ordering::Relaxed),
+                    lap_cached = c.lap_cached.load(Ordering::Relaxed),
                     documents = c.documents.load(Ordering::Relaxed),
                     in_flight = running.keys.len(),
                     failing_why = ?failing_why,
@@ -1024,6 +1089,33 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::encoding;
+
+    #[test]
+    fn the_lap_cache_keeps_only_conclusive_results() {
+        let cache = LapCache::default();
+        let found = |outcome| super::super::check::Check {
+            outcome,
+            retry_after: None,
+            by_dns: true,
+            took: Duration::from_millis(5),
+        };
+        cache.put("a.example", &found(Outcome::Did("did:plc:a".into())));
+        cache.put("b.example", &found(Outcome::Nothing));
+        cache.put("c.example", &found(Outcome::Inconclusive("timed out")));
+        assert_eq!(
+            cache.get("a.example").map(|c| c.outcome),
+            Some(Outcome::Did("did:plc:a".into()))
+        );
+        assert_eq!(
+            cache.get("b.example").map(|c| c.outcome),
+            Some(Outcome::Nothing)
+        );
+        assert!(
+            cache.get("c.example").is_none(),
+            "a failure is never reused"
+        );
+        assert!(cache.get("d.example").is_none());
+    }
 
     async fn account(client: &Client, did: &str, claim: &str, status: i16) {
         client

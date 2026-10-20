@@ -447,15 +447,46 @@ impl Checker {
         (String::from_utf8(body).ok(), None)
     }
 
-    /// The whole procedure: DNS, then HTTPS if DNS has no record.
+    /// The whole procedure: DNS, then HTTPS if DNS has no record, unless
+    /// HTTPS cannot answer for the handle (see [`https_can_answer`]).
     pub async fn check(&self, handle: &str) -> Check {
-        self.resolve(handle, true, true).await
+        self.resolve(handle, true, https_can_answer(handle)).await
     }
+}
+
+/// Providers that answer handles over HTTPS only one label deep: their
+/// certificate is a wildcard for `*.<domain>`, so a handle with more labels
+/// under it fails TLS on every attempt. Such a handle is decided by its DNS
+/// record alone, and with none it resolves to nothing, rather than being
+/// retried for a day as inconclusive. Spam waves register these in bulk.
+const ONE_LABEL_HTTPS: [&str; 1] = ["bsky.social"];
+
+/// Whether the HTTPS method can answer for this handle.
+pub fn https_can_answer(handle: &str) -> bool {
+    !ONE_LABEL_HTTPS.iter().any(|domain| {
+        handle
+            .strip_suffix(domain)
+            .and_then(|rest| rest.strip_suffix('.'))
+            .is_some_and(|below| below.contains('.'))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_handles_under_a_one_label_provider_skip_https() {
+        assert!(https_can_answer("alice.bsky.social"));
+        assert!(https_can_answer("bsky.social"));
+        assert!(https_can_answer("alice.example.com"));
+        assert!(https_can_answer("a.b.example.com"));
+        // Not under bsky.social, only ending like it.
+        assert!(https_can_answer("evilbsky.social"));
+        assert!(https_can_answer("a.evilbsky.social"));
+        assert!(!https_can_answer("est.emilie.bsky.social"));
+        assert!(!https_can_answer("a.b.c.bsky.social"));
+    }
 
     #[test]
     fn txt_records() {
