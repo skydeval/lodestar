@@ -247,8 +247,8 @@ shown is resolved the first time someone asks for it
 What a relay's listing lacks, a host may still list itself: a host the
 relay has stopped crawling, or repos it never picked up. So the
 verification role also reads the relay's `com.atproto.sync.listHosts`
-(about 6,300 active hosts) and then each host's own `listRepos`, a
-thousand per page.
+(about 1,900 hosts it lists as active, October 2026) and then each
+host's own `listRepos`, a thousand per page.
 
 - **Where.** In the verification role, not ingest: these requests go to
   hosts lodestar does not control, so they go through the same address
