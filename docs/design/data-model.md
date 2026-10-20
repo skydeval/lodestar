@@ -184,6 +184,12 @@ History holds claims, not verified handles, and the API says so.
 Beyond the primary keys, there are only:
 
 - the verified-handle index (above);
+- `accounts_created`, on `accounts (created_at, did)`, which
+  `GET /accounts` pages along. About 3 to 5 GB for the whole network.
+  It is not part of the schema each role creates at start: on a full
+  copy it takes minutes to build, so the verification role's index
+  upkeep builds it without blocking the first time it finds it missing,
+  and the listing answers `unavailable` until then;
 - an index on `check_failures` by next attempt, for the timer that
   retries failing checks;
 - an index on `verify_due` in the order the verification role reads it;
@@ -194,7 +200,7 @@ indexes a next-check time: the sweep reads `accounts` sequentially and
 does not need one.
 
 The `accounts` primary key is rebuilt when the first sync reaches the
-tip, and both `accounts` indexes are rebuilt whenever the weekly laps
+tip, and the `accounts` indexes are rebuilt whenever the weekly laps
 have grown them half again past their size after a rebuild
 ([Deployment](deployment.md#maintenance)).
 

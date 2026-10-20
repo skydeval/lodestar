@@ -35,7 +35,7 @@ list is comma-separated.
 | `LODESTAR_LISTEN` | api | `127.0.0.1:8080` | where the API listens inside its container |
 | `LODESTAR_API_CONNECTIONS` | api | 4 | database connections held |
 | `LODESTAR_PLC_FRESH_SECONDS` | api | 300 | the PLC source counts as fresh this long after a tip confirmation |
-| `LODESTAR_MAX_BATCH` | api | 1000 | most DIDs in one batch lookup |
+| `LODESTAR_MAX_BATCH` | api | 1000 | most DIDs in one batch lookup, and most identities in one page of `GET /accounts` |
 | `LODESTAR_LIVE_DEADLINE_SECONDS` | api | 5 | how long a lookup waits on a live check |
 | `LODESTAR_CONSUMER_QUEUE_CAP` | api | 10000 | most consumer-requested checks waiting, per kind |
 | `LODESTAR_STATUS_LISTEN` | api | `0.0.0.0:8090` in compose, off otherwise | where the status page listens inside its container; empty turns it off |

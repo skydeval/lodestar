@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /accounts`: every identity lodestar holds, a page at a time, in
+  the order each was created, for consumers that walk the whole network
+  or keep up with new identities. Pages start `?after=` a time or
+  continue from a `?cursor=`; each entry is the account object. Pages
+  stop two seconds short of what the PLC source has applied, so nothing
+  can be committed behind a consumer's position. It reads along a new
+  index, `accounts (created_at, did)`, about 3 to 5 GB, which the
+  verification role builds without blocking the first time it finds it
+  missing; until then the listing answers `unavailable`.
+
 - The README names lodestar's consumers, starting with Farsight. The
   measurements cover serving one: Farsight's handle checks about 10
   times faster with lodestar in the same datacenter, and what distance

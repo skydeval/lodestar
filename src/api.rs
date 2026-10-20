@@ -298,12 +298,17 @@ async fn source(app: &App) -> Result<(Value, bool)> {
 /// takes its handle status and check time from the handle's row. The last
 /// is whether the handle is due (below).
 fn account_columns() -> String {
+    account_columns_with(DUE)
+}
+
+/// The columns of an account answer, with `due` as the last.
+fn account_columns_with(due: &str) -> String {
     format!(
         "a.did, a.method, a.status, p.endpoint, a.signing_key, a.handle_claim, \
          CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_status \
               WHEN s.did = a.did THEN 0::int2 WHEN s.did IS NOT NULL THEN 1::int2 ELSE s.outcome END, \
          to_char(CASE WHEN s.handle IS NULL OR a.status <> 0 THEN a.handle_checked_at ELSE s.checked_at END AT TIME ZONE 'UTC', {TS}), \
-         to_char(a.created_at AT TIME ZONE 'UTC', {TS}), s.handle IS NOT NULL, {DUE}"
+         to_char(a.created_at AT TIME ZONE 'UTC', {TS}), s.handle IS NOT NULL, {due}"
     )
 }
 
@@ -551,6 +556,136 @@ async fn post_accounts(
         .collect();
     queue::push(db, queue::REASON_BATCH, &items).await?;
     Ok(Json(json!({ "accounts": results, "source": src })))
+}
+
+/// The listing stops short of the newest identities by this much, so an
+/// identity committed a moment after another but created a moment before
+/// it cannot appear behind a consumer's position.
+const LISTING_SETTLE: &str = "2 seconds";
+
+/// Where a page of the listing starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ListFrom {
+    /// The first identity.
+    Start,
+    /// The first identity created after this time, in microseconds since
+    /// the epoch.
+    After(i64),
+    /// The identity after this one: its creation time in microseconds
+    /// since the epoch, and its DID.
+    Cursor(i64, Vec<u8>),
+}
+
+/// A listing position: an identity's creation time in microseconds since
+/// the epoch, and its DID. Opaque to consumers.
+fn listing_cursor(micros: i64, did: &[u8]) -> String {
+    format!("{micros}_{}", encoding::did_text(did).unwrap_or_default())
+}
+
+fn parse_listing_cursor(text: &str) -> Option<(i64, Vec<u8>)> {
+    let (micros, did) = text.split_once('_')?;
+    let micros = micros.parse().ok()?;
+    parse_did(did)?;
+    Some((micros, encoding::did_bytes(did)))
+}
+
+/// A page of the listing: every identity lodestar holds, in the order of
+/// its creation time, then its DID. Only up to what the PLC source has
+/// applied, less [`LISTING_SETTLE`]. The second value is the position of
+/// the last identity on the page, or None for an empty page.
+async fn list_page(
+    db: &Client,
+    from: &ListFrom,
+    count: i64,
+) -> Result<(Vec<Value>, Option<String>)> {
+    use tokio_postgres::types::ToSql;
+    let at = "timestamptz 'epoch' + $2::int8 * interval '1 microsecond'";
+    let (start, args): (String, Vec<&(dyn ToSql + Sync)>) = match from {
+        ListFrom::Start => ("true".to_owned(), vec![&count]),
+        ListFrom::After(t) => (format!("a.created_at > {at}"), vec![&count, t]),
+        ListFrom::Cursor(t, did) => (
+            format!("(a.created_at, a.did) > ({at}, $3::bytea)"),
+            vec![&count, t, did],
+        ),
+    };
+    let sql = format!(
+        "SELECT {}, (extract(epoch FROM a.created_at) * 1000000)::int8 \
+         FROM {ACCOUNT_FROM} \
+         WHERE {start} AND a.created_at <= LEAST( \
+             COALESCE((SELECT last_op_at FROM sync_state WHERE source = 'plc'), '-infinity'), \
+             now() - interval '{LISTING_SETTLE}') \
+         ORDER BY a.created_at, a.did LIMIT $1",
+        account_columns_with("false")
+    );
+    let rows = db
+        .query(&sql, &args)
+        .await
+        .context("reading a page of the listing")?;
+    let next = rows
+        .last()
+        .map(|r| listing_cursor(r.get(11), &r.get::<_, Vec<u8>>(0)));
+    Ok((rows.iter().map(account_json).collect(), next))
+}
+
+/// Whether the listing's index has been built and can be read.
+async fn listing_ready(db: &Client) -> Result<bool> {
+    Ok(db
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+             WHERE c.relname = $1 AND i.indisvalid \
+               AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'accounts'::regclass))",
+            &[&db::LISTING_INDEX],
+        )
+        .await?
+        .get(0))
+}
+
+#[derive(Deserialize)]
+struct Listing {
+    /// A time (RFC 3339): start after it.
+    after: Option<String>,
+    /// The `next_cursor` of an earlier page: continue from it.
+    cursor: Option<String>,
+    count: Option<i64>,
+}
+
+/// Every identity, a page at a time, in the order it was created: for a
+/// consumer that walks the network, or keeps up with new identities by
+/// keeping the last `next_cursor` and asking again later.
+async fn get_accounts(
+    State(app): State<Arc<App>>,
+    Query(q): Query<Listing>,
+) -> Result<Json<Value>, Miss> {
+    let from = match (&q.after, &q.cursor) {
+        (Some(_), Some(_)) => return Err(Miss(StatusCode::BAD_REQUEST, "invalid_listing", None)),
+        (None, None) => ListFrom::Start,
+        (Some(after), None) => chrono::DateTime::parse_from_rfc3339(after)
+            .map(|t| ListFrom::After(t.timestamp_micros()))
+            .map_err(|_| Miss(StatusCode::BAD_REQUEST, "invalid_listing", None))?,
+        (None, Some(cursor)) => parse_listing_cursor(cursor)
+            .map(|(t, did)| ListFrom::Cursor(t, did))
+            .ok_or(Miss(StatusCode::BAD_REQUEST, "invalid_listing", None))?,
+    };
+    let count = q
+        .count
+        .unwrap_or(app.max_batch as i64)
+        .clamp(1, app.max_batch as i64);
+    let (src, _) = source(&app).await?;
+    let db = app.db();
+    if !listing_ready(db).await? {
+        return Err(Miss(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            Some(src),
+        ));
+    }
+    let (accounts, last) = list_page(db, &from, count).await?;
+    // An empty page keeps the position it was asked from, so a consumer
+    // keeping up can ask again later with the same one.
+    let next = last.or(q.cursor);
+    Ok(Json(
+        json!({ "accounts": accounts, "next_cursor": next, "source": src }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -931,7 +1066,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         .route("/account/{did}", get(get_account))
         .route("/account/{did}/history", get(get_history))
         .route("/account/{did}/refresh", post(post_refresh))
-        .route("/accounts", post(post_accounts))
+        .route("/accounts", get(get_accounts).post(post_accounts))
         .route("/handle/{handle}", get(get_handle))
         // The directory's own read, for anything that speaks to it.
         .route("/{did}", get(doc::get_document))
@@ -1000,6 +1135,114 @@ mod tests {
         assert_eq!(absent(Method::Plc, true).1, "not_found");
         assert_eq!(absent(Method::Plc, false).1, "syncing");
         assert_eq!(absent(Method::Web, true).1, "unavailable");
+    }
+
+    #[test]
+    fn listing_cursors_read_back() {
+        let did = encoding::did_bytes("did:plc:ewvi7nxzyoun6zhxrhs64oiz");
+        let text = listing_cursor(1_681_275_237_057_123, &did);
+        assert_eq!(text, "1681275237057123_did:plc:ewvi7nxzyoun6zhxrhs64oiz");
+        assert_eq!(
+            parse_listing_cursor(&text),
+            Some((1_681_275_237_057_123, did))
+        );
+        let web = encoding::did_bytes("did:web:example.com");
+        assert_eq!(
+            parse_listing_cursor(&listing_cursor(5, &web)),
+            Some((5, web))
+        );
+        for bad in [
+            "",
+            "123",
+            "x_did:plc:ewvi7nxzyoun6zhxrhs64oiz",
+            "123_did:plc:short",
+            "123_",
+        ] {
+            assert_eq!(parse_listing_cursor(bad), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_listing_pages_by_creation_time_and_stops_short_of_the_tip() {
+        let Some(client) = crate::testdb::fresh().await else {
+            return;
+        };
+        // The PLC source has applied everything created until a minute ago.
+        client
+            .batch_execute(
+                "INSERT INTO sync_state (source, origin, cursor, phase, last_op_at) \
+                 VALUES ('plc', '', 0, 'live', now() - interval '1 minute')",
+            )
+            .await
+            .unwrap();
+        // Three created at the same moment, one an hour later, one after
+        // what the source has applied.
+        let did = |n: u8| format!("did:web:a{n}.example");
+        for (n, ago) in [
+            (3u8, "2 hours"),
+            (1, "2 hours"),
+            (2, "2 hours"),
+            (4, "1 hour"),
+            (5, "30 seconds"),
+        ] {
+            client
+                .execute(
+                    &format!(
+                        "INSERT INTO accounts (created_at, method, status, handle_status, did) \
+                         VALUES (date_trunc('second', now()) - interval '{ago}', 1, 0, 5, $1)"
+                    ),
+                    &[&encoding::did_bytes(&did(n))],
+                )
+                .await
+                .unwrap();
+        }
+        let dids = |page: &[Value]| -> Vec<String> {
+            page.iter()
+                .map(|v| v["did"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let (first, next) = list_page(&client, &ListFrom::Start, 2).await.unwrap();
+        assert_eq!(dids(&first), [did(1), did(2)], "creation time, then DID");
+        let (t, last) = parse_listing_cursor(next.as_deref().unwrap()).unwrap();
+        assert_eq!(last, encoding::did_bytes(&did(2)));
+
+        // The rest of the tie, then the next hour; nothing past the tip.
+        let (second, next) = list_page(&client, &ListFrom::Cursor(t, last), 2)
+            .await
+            .unwrap();
+        assert_eq!(dids(&second), [did(3), did(4)]);
+        let (t, last) = parse_listing_cursor(next.as_deref().unwrap()).unwrap();
+        let (third, next) = list_page(&client, &ListFrom::Cursor(t, last), 2)
+            .await
+            .unwrap();
+        assert!(third.is_empty());
+        assert_eq!(next, None);
+
+        // After a time: strictly later than it.
+        let tie: i64 = client
+            .query_one(
+                "SELECT (extract(epoch FROM date_trunc('second', now()) - interval '2 hours') * 1000000)::int8",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let (after, _) = list_page(&client, &ListFrom::After(tie), 10).await.unwrap();
+        assert_eq!(dids(&after), [did(4)]);
+
+        // Each entry is an account answer.
+        assert_eq!(first[0]["status"], "active");
+        assert_eq!(first[0]["handle_status"], "none");
+        assert_eq!(first[0]["created_at_kind"], "first_seen");
+
+        // Once the source has applied it, the newest identity appears.
+        client
+            .batch_execute("UPDATE sync_state SET last_op_at = now() WHERE source = 'plc'")
+            .await
+            .unwrap();
+        let (now_page, _) = list_page(&client, &ListFrom::After(tie), 10).await.unwrap();
+        assert_eq!(dids(&now_page), [did(4), did(5)]);
     }
 
     #[tokio::test]

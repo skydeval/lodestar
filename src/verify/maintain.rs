@@ -8,6 +8,9 @@
 //!
 //! Bytes per entry, not size, because the verified-handle index rightly
 //! grows as handles are verified.
+//!
+//! The listing's index is built here too, the first time the role starts
+//! with a database that lacks it.
 
 use std::time::Duration;
 
@@ -15,8 +18,10 @@ use anyhow::{Context, Result};
 use tokio::sync::watch;
 use tokio_postgres::Client;
 
+use crate::db::LISTING_INDEX;
+
 /// The indexes looked after.
-const INDEXES: [&str; 2] = ["accounts_pkey", "accounts_verified_handle"];
+const INDEXES: [&str; 3] = ["accounts_pkey", "accounts_verified_handle", LISTING_INDEX];
 /// How far past its baseline an index may grow before it is rebuilt.
 const GROWTH: f64 = 1.5;
 /// An index with fewer entries is left alone: its bytes per entry say
@@ -87,6 +92,44 @@ async fn rebuild(client: &Client, index: &str) -> Result<()> {
         .with_context(|| format!("rebuilding {index}"))
 }
 
+/// Build the listing's index if the database lacks it, without blocking
+/// reads or writes. A build that was interrupted leaves an invalid index of
+/// that name, which goes first. On an empty table this is instant; on a
+/// full copy it takes minutes, and the listing answers `unavailable` until
+/// it is done.
+pub async fn ensure_listing_index(client: &Client) -> Result<()> {
+    let valid: Option<bool> = client
+        .query_opt(
+            "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+             WHERE c.relname = $1 \
+               AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'accounts'::regclass)",
+            &[&LISTING_INDEX],
+        )
+        .await?
+        .map(|r| r.get(0));
+    match valid {
+        Some(true) => return Ok(()),
+        Some(false) => client
+            .batch_execute(&format!(
+                "DROP INDEX CONCURRENTLY IF EXISTS {LISTING_INDEX}"
+            ))
+            .await
+            .context("dropping an interrupted build of the listing's index")?,
+        None => {}
+    }
+    tracing::info!("building the listing's index");
+    client
+        .batch_execute(&format!(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS {LISTING_INDEX} ON accounts (created_at, did)"
+        ))
+        .await
+        .context("building the listing's index")?;
+    record_baseline(client, LISTING_INDEX).await?;
+    let (bytes, _) = measure(client, LISTING_INDEX).await?;
+    tracing::info!(bytes, "the listing's index is built");
+    Ok(())
+}
+
 /// Rebuild what has grown. Only while the PLC source is live and no lap is
 /// running: a lap is what grows them, and the first sync rebuilds the key
 /// itself when it ends.
@@ -137,6 +180,10 @@ pub async fn run(client: Client, mut stop: watch::Receiver<bool>) -> Result<()> 
             _ = look.tick() => {
                 // Maintenance never stops verification: a failure is
                 // reported and tried again at the next look.
+                if let Err(e) = ensure_listing_index(&client).await {
+                    tracing::warn!("the listing's index: {e:#}");
+                    continue;
+                }
                 if let Err(e) = check(&client).await {
                     tracing::warn!("index maintenance: {e:#}");
                 }
@@ -163,6 +210,19 @@ mod tests {
             )
             .await
             .unwrap();
+        // The listing's index is built, valid, and building it again does
+        // nothing.
+        ensure_listing_index(&client).await.unwrap();
+        ensure_listing_index(&client).await.unwrap();
+        let valid: bool = client
+            .query_one(
+                "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1",
+                &[&LISTING_INDEX],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(valid);
         // Live, but the indexes are far too small to judge.
         check(&client).await.unwrap();
         for index in INDEXES {

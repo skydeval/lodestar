@@ -5,6 +5,7 @@
 | `GET /account/{did}` | PDS, signing key, handle and its status, account status |
 | `GET /account/{did}/history` | handle-claim and PDS changes, newest first |
 | `POST /accounts` | the same as the first, for up to 1,000 DIDs: `{"dids": [...]}` |
+| `GET /accounts` | every identity, a page at a time, in the order each was created: `?after=<time>` or `?cursor=<next_cursor>`, and `?count=` up to 1,000 |
 | `GET /handle/{handle}` | the DID that holds a verified handle |
 | `GET /{did}` | a `did:plc`'s DID document, as `plc.directory` gives it |
 | `POST /account/{did}/refresh` | re-fetches a `did:web` document and re-checks the handle |

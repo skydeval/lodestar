@@ -10,6 +10,7 @@ change anything, and there is no authentication.
 | `GET /account/{did}` | yes | An account's current state |
 | `GET /account/{did}/history` | yes | Its handle and PDS changes, newest first |
 | `POST /accounts` | yes | The same as the first, for up to 1,000 DIDs |
+| `GET /accounts` | yes | Every identity, a page at a time, in the order each was created |
 | `GET /handle/{handle}` | yes | The DID that holds a verified handle |
 | `GET /{did}` | yes | A `did:plc`'s DID document, as `plc.directory` gives it |
 | `POST /account/{did}/refresh` | no | Re-checks an account now |
@@ -166,6 +167,42 @@ live fetch: a `did:web` lodestar has not seen is answered `unknown`.
 Accounts whose handles are due are queued, as for a single lookup, up
 to a cap.
 
+## `GET /accounts`
+
+Every identity lodestar holds, a page at a time, in the order each was
+created, then by DID: for a consumer that walks the whole network, or
+keeps up with new identities. It is not the directory's `/export`, which
+lists signed operations that lodestar does not keep; each entry is an
+identity as it is now.
+
+- `?after=<time>` (RFC 3339) starts with the first identity created
+  after that time; `?cursor=<next_cursor>` continues from an earlier
+  page; neither starts at the beginning. Not both.
+- `?count=` sets the page size: 1,000 by default and at most
+  (`LODESTAR_MAX_BATCH`).
+
+```json
+{"accounts": [{ …account… }, { …account… }],
+ "next_cursor": "1681275237057123_did:plc:…",
+ "source": { "plc": { … } }}
+```
+
+Each entry is the account object, as for a single lookup. `created_at`
+is the first PLC operation's time for a `did:plc`, and when lodestar
+first saw it for a `did:web` (`created_at_kind` says which).
+
+**Keeping up.** Keep the last `next_cursor` and ask again with it later:
+an empty page means nothing new yet, and gives back the same cursor. A
+page ends a little short of the newest identities: at what the PLC
+source has applied, less two seconds. Identities are committed in the
+order they were created, except that a `did:web` is dated when lodestar
+first sees it; holding back the tip keeps an identity created a moment
+earlier from being committed behind a consumer's position.
+
+A malformed `after` or `cursor`, or both, is `invalid_listing` (400).
+Until its index is built, the listing answers `unavailable` (503); see
+[Data model](data-model.md#indexes).
+
 ## `GET /handle/{handle}`
 
 The DID that holds a verified handle.
@@ -277,7 +314,8 @@ its usual limits and safety rules, and the API waits up to the deadline,
   consumer's own firehose shows a handle change before lodestar has
   re-checked it; the refresh request and `handle_checked_at` cover that
   gap, which is about a quarter of a second when the check runs at once.
-- An endpoint that lists every DID.
+- The directory's operation log (`/export`, `/{did}/log`): lodestar
+  keeps no signed operations. `GET /accounts` lists identities instead.
 - Handle prefix search.
 - Point-in-time queries.
 

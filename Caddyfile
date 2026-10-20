@@ -22,7 +22,7 @@
 	# The reads. `/ops/*` and the refresh request are not among them.
 	@read {
 		method GET HEAD
-		path /account/* /handle/* /did:plc:*
+		path /account/* /accounts /handle/* /did:plc:*
 	}
 	handle @read {
 		reverse_proxy api:8080

@@ -17,6 +17,11 @@ pub const HANDLE_UNREACHABLE: i16 = 3;
 pub const HANDLE_PENDING: i16 = 4;
 pub const HANDLE_NONE: i16 = 5;
 
+/// The index `GET /accounts` reads along: `accounts (created_at, did)`. Not
+/// in [`SCHEMA`]: on a full copy it takes minutes to build, so the
+/// verification role's index upkeep builds it without blocking.
+pub const LISTING_INDEX: &str = "accounts_created";
+
 pub async fn connect(url: &str) -> Result<Client> {
     let (client, conn) = tokio_postgres::connect(url, NoTls)
         .await

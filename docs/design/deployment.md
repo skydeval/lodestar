@@ -174,7 +174,8 @@ reach the server directly.
 handle it checks, about 50 million rows. Postgres reuses the space this
 frees in the table, but an index keeps the size it grew to; one full
 sweep was measured to double the primary key. So lodestar looks after
-the two `accounts` indexes itself:
+the three `accounts` indexes itself (the key, the verified-handle index
+and the listing's):
 
 - After every rebuild it keeps each index's bytes per entry as a
   baseline. Bytes per entry, not size, because the verified-handle index
