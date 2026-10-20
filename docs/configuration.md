@@ -26,7 +26,7 @@ list is comma-separated.
 | `LODESTAR_PROFILE` | verify | `vps` | starting rates: `vps` or `hobbyist` |
 | `LODESTAR_RATES` | verify | none | fixed rates for named domains, as `domain=rate:in_flight` |
 | `LODESTAR_RESOLVER` | verify | `system` | the DNS resolver: `system`, or addresses separated by commas, asked in turn when one fails |
-| `LODESTAR_LARGE_DOMAINS` | verify | `bsky.social` | domains swept by a walker of their own |
+| `LODESTAR_LARGE_DOMAINS` | verify | `bsky.social` | domains swept by a walker of their own, besides those lodestar finds large itself |
 | `LODESTAR_SHARED_THRESHOLD` | verify | 100 | a handle claimed by more identities is resolved once for all |
 | `LODESTAR_SHARED_REFRESH_MINUTES` | verify | 60 | least time between early refreshes of a shared handle |
 | `LODESTAR_LAP_CHUNK_BLOCKS` | verify | 500 | how much of `accounts` a lap reads at a time |

@@ -3,7 +3,9 @@
 //! Two handles account for half the directory's claims; without this each
 //! claimant would cost a request to the same domain.
 
+use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
@@ -11,6 +13,7 @@ use tokio_postgres::Client;
 
 use super::check::{Check, Outcome};
 use super::decide::{self, Failure, FailureChange, Rules};
+use super::limiter::{Limits, registrable};
 use crate::db;
 
 /// An approximate count of claims per handle: four rows of one-byte
@@ -63,7 +66,11 @@ impl ClaimCounter {
     }
 
     /// Count every active identity's claim. One pass over `accounts`.
-    pub async fn fill(&mut self, client: &Client) -> Result<u64> {
+    /// Returns the claims counted and, per registrable domain, the claims
+    /// made while their handle was not yet shared: a stand-in for the
+    /// domain's distinct handles, in which a handle claimed millions of
+    /// times counts about as many times as the threshold.
+    pub async fn fill(&mut self, client: &Client) -> Result<(u64, HashMap<String, u64>)> {
         let params: [&str; 0] = [];
         let rows = client
             .query_raw(
@@ -74,12 +81,50 @@ impl ClaimCounter {
             .context("reading claims")?;
         tokio::pin!(rows);
         let mut n = 0u64;
+        let mut domains: HashMap<String, u64> = HashMap::new();
         while let Some(row) = rows.try_next().await? {
-            self.add(row.get::<_, &str>(0));
+            let handle = row.get::<_, &str>(0);
+            if !self.is_shared(handle) {
+                let domain = registrable(handle);
+                match domains.get_mut(domain) {
+                    Some(c) => *c += 1,
+                    None => {
+                        domains.insert(domain.to_owned(), 1);
+                    }
+                }
+            }
+            self.add(handle);
             n += 1;
         }
-        Ok(n)
+        Ok((n, domains))
     }
+}
+
+/// Above this many handles a domain is large whatever its rate.
+const LARGE_MAX: f64 = 1_000_000.0;
+
+/// The domains with more handles (as [`ClaimCounter::fill`] counts them)
+/// than their rate can check in one re-check interval, or than
+/// [`LARGE_MAX`], whichever is lower. Each gets a walker of its own; the
+/// general lap would otherwise send most of their handles to the queue.
+pub fn large_domains(
+    handles: &HashMap<String, u64>,
+    limits: &Limits,
+    interval: Duration,
+) -> Vec<(String, u64)> {
+    let mut large: Vec<(String, u64)> = handles
+        .iter()
+        .filter(|(domain, n)| {
+            let rate = limits
+                .overrides
+                .get(domain.as_str())
+                .map_or(limits.default.rate, |l| l.rate);
+            **n as f64 > (rate * interval.as_secs_f64()).min(LARGE_MAX)
+        })
+        .map(|(d, n)| (d.clone(), *n))
+        .collect();
+    large.sort_by_key(|a| std::cmp::Reverse(a.1));
+    large
 }
 
 /// A row exists for the handle, starting from what lodestar already knows:
@@ -324,6 +369,37 @@ mod tests {
         assert!(c.is_shared("many.example"));
         assert!(!c.is_shared("one.example"));
         assert!(!c.is_shared("never.example"));
+    }
+
+    #[test]
+    fn a_domain_is_large_past_what_its_rate_checks_in_an_interval() {
+        let mut limits = Limits::default();
+        limits.default.rate = 1.0;
+        limits.overrides.insert(
+            "fast.example".to_owned(),
+            super::super::limiter::DomainLimit {
+                rate: 100.0,
+                in_flight: 8,
+            },
+        );
+        let week = Duration::from_secs(7 * 24 * 3600);
+        let handles: HashMap<String, u64> = [
+            // 1 a second for a week is 604,800.
+            ("slow.example", 604_801),
+            ("small.example", 604_800),
+            // 100 a second would check 60 million, but past a million
+            // a domain is large anyway.
+            ("fast.example", 1_000_001),
+            ("tiny.example", 5),
+        ]
+        .into_iter()
+        .map(|(d, n)| (d.to_owned(), n))
+        .collect();
+        let large: Vec<String> = large_domains(&handles, &limits, week)
+            .into_iter()
+            .map(|(d, _)| d)
+            .collect();
+        assert_eq!(large, ["fast.example", "slow.example"]);
     }
 
     #[test]

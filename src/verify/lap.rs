@@ -27,10 +27,9 @@ use crate::queue::{self, Item};
 
 pub struct Opts {
     pub database_url: String,
-    /// The large domain this walker is for. None is the general lap.
+    /// The large domain this walker is for. None is the general lap, which
+    /// passes over every large domain's accounts (`Shared::large`).
     pub domain: Option<String>,
-    /// Every large domain. The general lap passes over their accounts.
-    pub large: Vec<String>,
     /// A new lap starts no sooner than this after the last one started.
     pub interval: Duration,
     pub chunk_blocks: i64,
@@ -105,7 +104,13 @@ impl Lap<'_> {
     fn mine(&self, domain: &str) -> bool {
         match &self.opts.domain {
             Some(d) => d == domain,
-            None => !self.opts.large.iter().any(|l| l == domain),
+            None => !self
+                .shared
+                .large
+                .read()
+                .expect("large lock")
+                .iter()
+                .any(|l| l == domain),
         }
     }
 

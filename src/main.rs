@@ -139,7 +139,8 @@ enum Cmd {
         /// A shared handle is refreshed early no more often than this.
         #[arg(long, env = "LODESTAR_SHARED_REFRESH_MINUTES", default_value_t = 60)]
         shared_refresh_minutes: u64,
-        /// Domains with so many handles that each gets its own walker.
+        /// Domains with so many handles that each gets its own walker,
+        /// besides those the claim count finds large.
         #[arg(
             long,
             env = "LODESTAR_LARGE_DOMAINS",

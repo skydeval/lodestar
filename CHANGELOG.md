@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The sweep keeps each handle's conclusive result for 10 minutes and
   answers other claimants of the same handle from it, without a request.
   Only the sweep reads it. Health reports `lap_cached`.
+- Large domains are found automatically. The claim count at start also
+  counts each domain's handles (a shared handle's claims count only up
+  to the shared threshold), and a domain with more than its rate can
+  check in one re-check interval, or more than a million, gets a walker
+  of its own as soon as it is found, besides those named in
+  `LODESTAR_LARGE_DOMAINS`. A walker's lap left from a domain no longer
+  large is dropped.
 - The README names lodestar's consumers, starting with Farsight. The
   measurements cover serving one: Farsight's handle checks about 10
   times faster with lodestar in the same datacenter, and what distance

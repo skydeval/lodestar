@@ -206,8 +206,18 @@ cannot go through the general sweep's overflow; there are too many. So a
 **large domain** gets a walker of its own, which reads the table the same
 way, checks only that domain's handles, and waits for its budget
 instead of passing over them. Its lap lasts as long as its handles take
-at its rate. Large domains are named in the configuration;
-`bsky.social` is the default.
+at its rate.
+
+A domain is large when it has more handles than its rate can check in
+one re-check interval (604,800 at the default 1 a second for 7 days),
+or more than 1,000,000 whatever its rate. Lodestar finds them itself:
+the same pass that counts claims for shared handles (below) counts each
+domain's claims, counting a handle only while it is below the shared
+threshold, so a handle claimed by millions counts about a hundred times
+and its domain is not made large by spam. Domains named in the
+configuration are large as well; `bsky.social` is the default. A walker
+starts as soon as the count finds its domain, and a walker's lap left
+over from a domain that is no longer large is dropped.
 
 ### Shared handles
 

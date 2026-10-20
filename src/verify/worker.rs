@@ -144,6 +144,9 @@ pub(super) struct Shared {
     /// Until then no handle is checked.
     pub(super) claims_ready: AtomicBool,
     pub(super) lap_cache: LapCache,
+    /// The large domains: those named in config, and those the claim
+    /// count found. Each has a walker; the general lap passes over them.
+    pub(super) large: std::sync::RwLock<Vec<String>>,
 }
 
 impl Shared {
@@ -546,15 +549,17 @@ async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Re
 }
 
 /// Count every identity's claim, once, when the PLC source is at the tip.
-/// Does nothing before then, or once it has been done.
+/// Does nothing before then, or once it has been done. The same pass finds
+/// the large domains; returns those found that have no walker yet.
 async fn count_claims_at_the_tip(
     client: &Client,
     shared: &Shared,
     counter: &std::sync::RwLock<ClaimCounter>,
     threshold: u8,
-) -> Result<()> {
+    limits: &limiter::Limits,
+) -> Result<Vec<String>> {
     if shared.claims_ready.load(Ordering::Acquire) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let live = client
         .query_opt(
@@ -564,19 +569,46 @@ async fn count_claims_at_the_tip(
         .await?
         .is_some();
     if !live {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let t = Instant::now();
     let mut filling = ClaimCounter::new(threshold);
-    let claims = filling.fill(client).await?;
+    let (claims, handles) = filling.fill(client).await?;
     *counter.write().expect("counter lock") = filling;
+    let mut new = Vec::new();
+    {
+        let mut large = shared.large.write().expect("large lock");
+        for (domain, n) in shared::large_domains(&handles, limits, shared.rules.recheck_interval) {
+            if !large.contains(&domain) {
+                tracing::info!(%domain, handles = n, "a large domain: it gets a walker of its own");
+                large.push(domain.clone());
+                new.push(domain);
+            }
+        }
+    }
+    // A walker's lap kept for a domain no longer large would go on
+    // deciding when its handles are due.
+    let walkers: Vec<String> = shared
+        .large
+        .read()
+        .expect("large lock")
+        .iter()
+        .map(|d| format!("lap:{d}"))
+        .collect();
+    client
+        .execute(
+            "DELETE FROM sync_state WHERE source LIKE 'lap:%' AND source <> 'lap:general' AND source <> ALL($1)",
+            &[&walkers],
+        )
+        .await
+        .context("dropping the laps of domains no longer large")?;
     shared.claims_ready.store(true, Ordering::Release);
     tracing::info!(
         claims,
         seconds = t.elapsed().as_secs(),
         "claims counted; handle checks may run"
     );
-    Ok(())
+    Ok(new)
 }
 
 /// Queue the retries and confirming checks that have come due.
@@ -714,6 +746,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         counts: Counts::default(),
         claims_ready: AtomicBool::new(false),
         lap_cache: LapCache::default(),
+        large: std::sync::RwLock::new(opts.large_domains.clone()),
     });
     for domain in &released {
         shared.limiter.slow(domain);
@@ -726,7 +759,14 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
         opts.shared_threshold,
     )));
     tracing::info!("verification worker started");
-    count_claims_at_the_tip(&control, &shared, &counter, opts.shared_threshold).await?;
+    let found = count_claims_at_the_tip(
+        &control,
+        &shared,
+        &counter,
+        opts.shared_threshold,
+        &opts.limits,
+    )
+    .await?;
 
     let mut controls: JoinSet<Result<()>> = JoinSet::new();
     if !opts.controls.is_empty() {
@@ -741,18 +781,26 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     }
 
     // The background sweep: one lap for everything but the large domains,
-    // and a walker for each of those.
+    // and a walker for each of those. Walkers for large domains the claim
+    // count finds later are started when it does.
     let mut laps: JoinSet<Result<()>> = JoinSet::new();
-    let large: Vec<String> = opts.large_domains.clone();
-    for domain in std::iter::once(None).chain(large.iter().cloned().map(Some)) {
-        let o = lap::Opts {
-            database_url: opts.database_url.clone(),
-            domain,
-            large: large.clone(),
-            interval: shared.rules.recheck_interval,
-            chunk_blocks: opts.lap_chunk_blocks,
-        };
-        laps.spawn(lap::run(shared.clone(), counter.clone(), o, stop.clone()));
+    let lap_opts = |domain: Option<String>| lap::Opts {
+        database_url: opts.database_url.clone(),
+        domain,
+        interval: shared.rules.recheck_interval,
+        chunk_blocks: opts.lap_chunk_blocks,
+    };
+    let configured = opts.large_domains.clone();
+    for domain in std::iter::once(None)
+        .chain(configured.into_iter().map(Some))
+        .chain(found.into_iter().map(Some))
+    {
+        laps.spawn(lap::run(
+            shared.clone(),
+            counter.clone(),
+            lap_opts(domain),
+            stop.clone(),
+        ));
     }
     // Rebuilds the accounts indexes when the laps have grown them.
     let client = db::connect(&opts.database_url).await?;
@@ -941,7 +989,22 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
             }
             _ = retry_look.tick() => {
                 queue_retries(&control).await?;
-                count_claims_at_the_tip(&control, &shared, &counter, opts.shared_threshold).await?;
+                let found = count_claims_at_the_tip(
+                    &control,
+                    &shared,
+                    &counter,
+                    opts.shared_threshold,
+                    &opts.limits,
+                )
+                .await?;
+                for domain in found {
+                    laps.spawn(lap::run(
+                        shared.clone(),
+                        counter.clone(),
+                        lap_opts(Some(domain)),
+                        stop.clone(),
+                    ));
+                }
                 queue_documents(&control, web::Rules::default().refresh_secs).await?;
                 // Let the domain pauses' holds run out, but not while a
                 // control pause has stopped every check: a domain cannot
