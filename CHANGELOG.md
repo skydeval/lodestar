@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continue from a `?cursor=`; each entry is the account object. Pages
   stop two seconds short of what the PLC source has applied, so nothing
   can be committed behind a consumer's position. It reads along a new
-  index, `accounts (created_at, did)`, about 3 to 5 GB, which the
+  index, `accounts (created_at, did)`, about 6.2 GB for the whole
+  network, which the
   verification role builds without blocking the first time it finds it
   missing; until then the listing answers `unavailable`.
 

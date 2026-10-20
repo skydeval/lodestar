@@ -185,7 +185,9 @@ Beyond the primary keys, there are only:
 
 - the verified-handle index (above);
 - `accounts_created`, on `accounts (created_at, did)`, which
-  `GET /accounts` pages along. About 3 to 5 GB for the whole network.
+  `GET /accounts` pages along. About 6.2 GB for the whole network
+  (124.7 million identities, October 2026), built in two minutes on the
+  reference host.
   It is not part of the schema each role creates at start: on a full
   copy it takes minutes to build, so the verification role's index
   upkeep builds it without blocking the first time it finds it missing,
