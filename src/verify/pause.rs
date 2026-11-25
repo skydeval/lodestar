@@ -185,7 +185,7 @@ pub(super) async fn run(
         for c in &controls {
             results.push(ask(&shared, c).await);
         }
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = jiff::Timestamp::now().as_millisecond();
         let was_open = shared.gate.is_open();
         let verdict = judge.round(&results, now);
         save_memory(&client, &controls, &judge.memory).await?;

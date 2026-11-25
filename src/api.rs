@@ -659,8 +659,9 @@ async fn get_accounts(
     let from = match (&q.after, &q.cursor) {
         (Some(_), Some(_)) => return Err(Miss(StatusCode::BAD_REQUEST, "invalid_listing", None)),
         (None, None) => ListFrom::Start,
-        (Some(after), None) => chrono::DateTime::parse_from_rfc3339(after)
-            .map(|t| ListFrom::After(t.timestamp_micros()))
+        (Some(after), None) => after
+            .parse::<jiff::Timestamp>()
+            .map(|t| ListFrom::After(t.as_microsecond()))
             .map_err(|_| Miss(StatusCode::BAD_REQUEST, "invalid_listing", None))?,
         (None, Some(cursor)) => parse_listing_cursor(cursor)
             .map(|(t, did)| ListFrom::Cursor(t, did))
@@ -816,7 +817,7 @@ async fn get_handle(
                     return Ok(Json(json!({
                         "handle": handle,
                         "did": encoding::did_text(&did),
-                        "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        "checked_at": format!("{:.3}", jiff::Timestamp::now()),
                     })));
                 }
                 // It resolves to an identity lodestar does not have, or has
@@ -1090,6 +1091,17 @@ pub async fn run(opts: Opts) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_are_written_in_milliseconds_with_a_z() {
+        let t = jiff::Timestamp::from_millisecond(1_681_275_237_057).unwrap();
+        assert_eq!(format!("{t:.3}"), "2023-04-12T04:53:57.057Z");
+        let whole = jiff::Timestamp::from_second(1_681_275_237).unwrap();
+        assert_eq!(format!("{whole:.3}"), "2023-04-12T04:53:57.000Z");
+        // A listing's `after` takes an offset as well as Z.
+        let after: jiff::Timestamp = "2023-04-12T06:53:57.057+02:00".parse().unwrap();
+        assert_eq!(after, t);
+    }
 
     #[test]
     fn dids_are_validated() {

@@ -21,7 +21,7 @@ passes only the read paths (see
 [Going public](docs/running.md#going-public)). There is no
 authentication, and nothing public can change anything.
 
-**Status:** 0.1.0, the first release. See `CHANGELOG.md`.
+**Status:** 0.2.0. See `CHANGELOG.md`.
 
 ## What it needs
 

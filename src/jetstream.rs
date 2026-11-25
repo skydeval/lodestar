@@ -97,8 +97,8 @@ fn parse(text: &str) -> Parsed {
             let time = ["time", "witnessedAt"]
                 .iter()
                 .filter_map(|k| p.get(*k).and_then(Value::as_str))
-                .find_map(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .map(|t| t.timestamp_micros());
+                .find_map(|t| t.parse::<jiff::Timestamp>().ok())
+                .map(|t| t.as_microsecond());
             let kind = if name == "identity" {
                 Kind::Identity
             } else {
@@ -638,7 +638,7 @@ mod tests {
             did: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             kind: Kind::Identity,
         }];
-        let now_us = chrono::Utc::now().timestamp_micros();
+        let now_us = jiff::Timestamp::now().as_microsecond();
         apply(&mut client, &east, &events, now_us).await.unwrap();
         assert_eq!(
             starting_position(&client, &east.source).await.unwrap(),

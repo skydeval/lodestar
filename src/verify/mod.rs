@@ -43,7 +43,7 @@ pub async fn check_accounts(
             continue;
         };
         let found = checker.check(&claim).await;
-        let at = chrono::Utc::now().timestamp_millis();
+        let at = jiff::Timestamp::now().as_millisecond();
         let applied =
             store::apply_handle_result(client, &rules, &key, &claim, &found, at, false).await?;
         println!("{did}: {claim} -> {:?} -> {applied:?}", found.outcome);

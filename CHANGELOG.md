@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - `GET /accounts`: every identity lodestar holds, a page at a time, in
@@ -56,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start without a rewrite), and its DID document is rebuilt from the
   two. Before, each such document was kept whole in `doc_parts`, about
   360 bytes an identity instead of about 36.
+- Times are read and written with `jiff` instead of `chrono`, which is
+  no longer maintained. Dependencies are updated past five advisories
+  published since 0.1.0.
 
 ### Fixed
 
@@ -170,5 +175,6 @@ with every handle verified: the whole network in under 30 GB.
   and a release workflow that builds the image from a tag.
 - Licensed under MIT or Apache-2.0.
 
-[Unreleased]: https://github.com/skydeval/lodestar/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/skydeval/lodestar/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/skydeval/lodestar/releases/tag/v0.2.0
 [0.1.0]: https://github.com/skydeval/lodestar/releases/tag/v0.1.0

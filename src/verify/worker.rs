@@ -346,7 +346,7 @@ pub(super) async fn check_one(
         }
         return Ok(());
     };
-    let at = chrono::Utc::now().timestamp_millis();
+    let at = jiff::Timestamp::now().as_millisecond();
     let answer = match found.outcome {
         Outcome::Did(_) => Answer::Did,
         Outcome::Nothing => Answer::Nothing,
@@ -527,7 +527,7 @@ async fn check_shared(shared: Arc<Shared>, handle: String, domain: String) -> Re
     let Some(found) = shared.resolve(&handle, &domain, None).await else {
         return Ok(());
     };
-    let at = chrono::Utc::now().timestamp_millis();
+    let at = jiff::Timestamp::now().as_millisecond();
     let hold_demotions = shared
         .pauses
         .lock()
@@ -726,7 +726,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
     // Domain pauses in force when lodestar stopped are still in force.
     let mut pauses = Pauses::default();
     let mut released: Vec<String> = Vec::new();
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let now_ms = jiff::Timestamp::now().as_millisecond();
     for r in control.query("SELECT source, phase, (extract(epoch FROM tip_at) * 1000)::bigint FROM sync_state WHERE source LIKE 'pause_:%'", &[]).await? {
         let source: String = r.get(0);
         let state = if r.get::<_, String>(1) == "paused" { State::Paused } else { State::Released };
@@ -939,7 +939,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 let how = match shared.pauses.lock().expect("pauses lock").admit(
                     &domain,
                     kind,
-                    chrono::Utc::now().timestamp_millis(),
+                    jiff::Timestamp::now().as_millisecond(),
                 ) {
                     // The domain is paused: the entry waits where it is.
                     Admit::Wait => {
@@ -1022,7 +1022,7 @@ pub async fn run(opts: Opts, mut stop: watch::Receiver<bool>) -> Result<()> {
                 // control pause has stopped every check: a domain cannot
                 // answer then, and the holds resume where they were.
                 let changes = if shared.gate.is_open() {
-                    shared.pauses.lock().expect("pauses lock").tick(chrono::Utc::now().timestamp_millis())
+                    shared.pauses.lock().expect("pauses lock").tick(jiff::Timestamp::now().as_millisecond())
                 } else {
                     Vec::new()
                 };

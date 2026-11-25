@@ -3,7 +3,6 @@
 //! document's parts when those three cannot rebuild them.
 
 use anyhow::{Context, Result, anyhow};
-use chrono::DateTime;
 use serde_json::{Value, json};
 
 use crate::{encoding, handle};
@@ -213,9 +212,10 @@ pub fn parse_line(line: &str) -> Result<Op> {
         .get("seq")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("export line has no seq"))?;
-    let created_ms = DateTime::parse_from_rfc3339(created_at)
+    let created_ms = created_at
+        .parse::<jiff::Timestamp>()
         .with_context(|| format!("bad createdAt {created_at}"))?
-        .timestamp_millis();
+        .as_millisecond();
     let op = v
         .get("operation")
         .ok_or_else(|| anyhow!("export line has no operation"))?;
@@ -260,6 +260,8 @@ mod tests {
         .unwrap();
         assert_eq!(op.kind, Kind::State);
         assert_eq!(op.seq, 7);
+        // 2023-04-12T04:53:57.057Z
+        assert_eq!(op.created_ms, 1_681_275_237_057);
         assert_eq!(op.prev, None);
         assert_eq!(op.claim.as_deref(), Some("alice.example.com"));
         assert_eq!(op.pds.as_deref(), Some("https://pds.example.com"));

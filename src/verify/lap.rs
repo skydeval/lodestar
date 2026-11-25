@@ -192,7 +192,7 @@ impl Lap<'_> {
                 let admit = self.shared.pauses.lock().expect("pauses lock").admit(
                     &domain,
                     Kind::First,
-                    chrono::Utc::now().timestamp_millis(),
+                    jiff::Timestamp::now().as_millisecond(),
                 );
                 match admit {
                     Admit::Go => {
@@ -535,7 +535,7 @@ mod tests {
             .execute("INSERT INTO listed (did) VALUES ($1)", &[&a])
             .await
             .unwrap();
-        let now = chrono::Utc::now().timestamp() as f64;
+        let now = jiff::Timestamp::now().as_second() as f64;
         let (rows, last) = due_in_listed(&client, &[], now).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(last.as_deref(), Some(a.as_slice()));

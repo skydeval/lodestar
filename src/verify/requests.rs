@@ -132,7 +132,7 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
     let admit = shared.pauses.lock().expect("pauses lock").admit(
         &domain,
         Kind::First,
-        chrono::Utc::now().timestamp_millis(),
+        jiff::Timestamp::now().as_millisecond(),
     );
     if admit == Admit::Wait {
         return Ok((UNAVAILABLE, None));
@@ -140,7 +140,7 @@ async fn resolve_handle(shared: &Shared, handle: &str) -> Result<(&'static str, 
     let Some(found) = shared.resolve(handle, &domain, None).await else {
         return Ok((UNAVAILABLE, None));
     };
-    let at = chrono::Utc::now().timestamp_millis();
+    let at = jiff::Timestamp::now().as_millisecond();
     // Taken as the domain's probe, the request's answer is the probe's: a
     // conclusive one ends the pause. Other requests stay out of the
     // samples, so lookups of arbitrary handles cannot start a pause.
