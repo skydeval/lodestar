@@ -5,7 +5,16 @@
 # or a proxy of the host's own. The verification role is the only one
 # that asks arbitrary hosts.
 
+# Docker keeps container output without limit unless told otherwise; a
+# repeated error can fill the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
 x-lodestar: &lodestar
+  logging: *logging
   # The released image. `docker compose build` builds the same thing
   # from this directory instead.
   image: ghcr.io/skydeval/lodestar:0.1.0
@@ -31,6 +40,7 @@ services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_USER: lodestar
       POSTGRES_DB: lodestar
@@ -101,6 +111,7 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: *logging
     deploy:
       replicas: ${LODESTAR_PROXY:-1}
     depends_on:

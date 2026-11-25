@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The status page's note on the totals ran "last" into the time since
   the last full count.
+- A `did:web` document failing past its grace period could not be marked
+  unresolvable: the update was refused by Postgres, rolled back, and the
+  document retried at once, without end. Every attempt was logged by both
+  the verification role and Postgres, and the logs could fill the disk.
+- `compose.yaml` caps each container's log at five files of 50 MB.
+  Docker keeps container output without limit otherwise.
 
 ## [0.1.0] - 2026-10-19
 

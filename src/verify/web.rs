@@ -299,7 +299,7 @@ pub async fn apply(
             if failing_for >= rules.grace_secs {
                 tx.execute(
                     "UPDATE accounts SET status = $2, handle_checked_at = NULL, \
-                         handle_status = CASE WHEN handle_claim IS NULL THEN $4 ELSE $3 END \
+                         handle_status = CASE WHEN handle_claim IS NULL THEN $4::smallint ELSE $3::smallint END \
                      WHERE did = $1 AND status = $5",
                     &[
                         &did,
@@ -332,6 +332,36 @@ mod tests {
     use super::*;
 
     const DID: &str = "did:web:example.com";
+
+    #[tokio::test]
+    async fn a_document_failing_past_its_grace_makes_the_account_unresolvable() {
+        let Some(mut client) = crate::testdb::fresh().await else {
+            return;
+        };
+        let rules = Rules {
+            refresh_secs: 86_400.0,
+            grace_secs: 0.0,
+        };
+        let did = encoding::did_bytes(DID);
+        let doc = Document {
+            claim: Some("alice.example.com".into()),
+            pds: Some("https://pds.example.com".into()),
+            key: None,
+        };
+        apply(&mut client, &rules, &did, Some(&doc), false)
+            .await
+            .unwrap();
+        apply(&mut client, &rules, &did, None, false).await.unwrap();
+        let row = client
+            .query_one(
+                "SELECT status, handle_status FROM accounts WHERE did = $1",
+                &[&did],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, i16>(0), db::STATUS_UNRESOLVABLE);
+        assert_eq!(row.get::<_, i16>(1), db::HANDLE_PENDING);
+    }
 
     #[test]
     fn hosts() {
