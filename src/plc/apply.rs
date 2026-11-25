@@ -49,6 +49,7 @@ pub struct Identity {
     pub claim: Option<String>,
     pub pds: Option<String>,
     pub key: Option<Vec<u8>>,
+    pub kem: Option<Vec<u8>>,
     pub status: Status,
     pub created_at: Option<String>,
     /// The claim is not what the stored row has, so the handle's status
@@ -146,6 +147,7 @@ impl Identity {
                 self.claim = None;
                 self.pds = None;
                 self.key = None;
+                self.kem = None;
             }
             Kind::State => {
                 if !self.known() {
@@ -178,6 +180,7 @@ impl Identity {
                 self.claim = op.claim.clone();
                 self.pds = op.pds.clone();
                 self.key = op.key.clone();
+                self.kem = op.kem.clone();
 
                 // A recovery that leaves only the original-state row, equal
                 // to the current state, leaves an identity that has never
@@ -223,6 +226,7 @@ mod tests {
             claim: claim.map(str::to_owned),
             pds: pds.map(str::to_owned),
             key: Some(vec![9]),
+            kem: None,
             doc: None,
         }
     }

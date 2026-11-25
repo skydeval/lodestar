@@ -97,7 +97,7 @@ async fn answer(app: &App, did: &str) -> anyhow::Result<Response> {
     let row = app
         .db()
         .query_opt(
-            "SELECT a.status, a.handle_claim, p.endpoint, a.signing_key, d.doc \
+            "SELECT a.status, a.handle_claim, p.endpoint, a.signing_key, d.doc, a.kem_key \
              FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id \
              LEFT JOIN doc_parts d ON d.did = a.did WHERE a.did = $1",
             &[&encoding::did_bytes(did)],
@@ -126,6 +126,7 @@ async fn answer(app: &App, did: &str) -> anyhow::Result<Response> {
             row.get::<_, Option<String>>(1).as_deref(),
             row.get::<_, Option<String>>(2).as_deref(),
             row.get::<_, Option<Vec<u8>>>(3).as_deref(),
+            row.get::<_, Option<Vec<u8>>>(5).as_deref(),
         ),
     };
     Ok((
@@ -146,11 +147,32 @@ mod tests {
             Some("bsky.app"),
             Some("https://puffball.us-east.host.bsky.network"),
             Some(&encoding::key_bytes(key)),
+            None,
         );
         // plc.directory's answer for this account, 16 October 2026.
         let expected: Value = serde_json::from_str(r##"{"@context":["https://www.w3.org/ns/did/v1","https://w3id.org/security/multikey/v1","https://w3id.org/security/suites/secp256k1-2019/v1"],"id":"did:plc:z72i7hdynmk6r22z27h6tvur","alsoKnownAs":["at://bsky.app"],"verificationMethod":[{"id":"did:plc:z72i7hdynmk6r22z27h6tvur#atproto","type":"Multikey","controller":"did:plc:z72i7hdynmk6r22z27h6tvur","publicKeyMultibase":"zQ3shQo6TF2moaqMTrUZEM1jeuYRQXeHEx4evX9751y2qPqRA"}],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://puffball.us-east.host.bsky.network"}]}"##).unwrap();
         assert_eq!(
             document("did:plc:z72i7hdynmk6r22z27h6tvur", &parts),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_account_with_an_encryption_key_as_the_directory_shows_it() {
+        let parts = rebuilt_parts(
+            Some("hungrylamb31.roost.latha.org"),
+            Some("https://roost.latha.org"),
+            Some(&encoding::key_bytes(
+                "did:key:zQ3shau1H6Z71eiXbAW4rGYfTsEUdxTuAayUhp9QE86CMBc5e",
+            )),
+            Some(&encoding::key_bytes(
+                "did:key:zDnaeTRCKLGGE7yBeq6L4t2XkGjggh2g6TYvYpkdva7RQhfF7",
+            )),
+        );
+        // plc.directory's answer for this account, 25 November 2026.
+        let expected: Value = serde_json::from_str(r##"{"@context":["https://www.w3.org/ns/did/v1","https://w3id.org/security/multikey/v1","https://w3id.org/security/suites/secp256k1-2019/v1","https://w3id.org/security/suites/ecdsa-2019/v1"],"id":"did:plc:pd46cp5x6gf3nbm5lnwqo3cz","alsoKnownAs":["at://hungrylamb31.roost.latha.org"],"verificationMethod":[{"id":"did:plc:pd46cp5x6gf3nbm5lnwqo3cz#atproto","type":"Multikey","controller":"did:plc:pd46cp5x6gf3nbm5lnwqo3cz","publicKeyMultibase":"zQ3shau1H6Z71eiXbAW4rGYfTsEUdxTuAayUhp9QE86CMBc5e"},{"id":"did:plc:pd46cp5x6gf3nbm5lnwqo3cz#atproto_kem","type":"Multikey","controller":"did:plc:pd46cp5x6gf3nbm5lnwqo3cz","publicKeyMultibase":"zDnaeTRCKLGGE7yBeq6L4t2XkGjggh2g6TYvYpkdva7RQhfF7"}],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://roost.latha.org"}]}"##).unwrap();
+        assert_eq!(
+            document("did:plc:pd46cp5x6gf3nbm5lnwqo3cz", &parts),
             expected
         );
     }

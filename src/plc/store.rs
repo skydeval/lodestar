@@ -72,7 +72,7 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
     let mut ids: HashMap<Vec<u8>, Identity> = HashMap::with_capacity(dids.len());
     let rows = tx
         .query(
-            "SELECT a.did, a.handle_claim, p.endpoint, a.signing_key, a.status, a.created_at::text \
+            "SELECT a.did, a.handle_claim, p.endpoint, a.signing_key, a.status, a.created_at::text, a.kem_key \
              FROM accounts a LEFT JOIN pds_endpoints p ON p.id = a.pds_id WHERE a.did = ANY($1)",
             &[&dids],
         )
@@ -87,6 +87,7 @@ async fn load(tx: &Transaction<'_>, dids: &[Vec<u8>]) -> Result<HashMap<Vec<u8>,
                 claim: r.get(1),
                 pds: r.get(2),
                 key: r.get(3),
+                kem: r.get(6),
                 status: if status == db::STATUS_TOMBSTONED {
                     Status::Tombstoned
                 } else {
@@ -214,6 +215,8 @@ pub async fn apply_page(
         Vec::new(),
         Vec::new(),
     );
+    let mut n_kem: Vec<Option<&[u8]>> = Vec::new();
+    let mut u_kem: Vec<Option<&[u8]>> = Vec::new();
     let (mut h_did, mut h_seq, mut h_at, mut h_claim, mut h_pds) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut hd_did, mut hd_seq) = (Vec::new(), Vec::new());
@@ -246,6 +249,7 @@ pub async fn apply_page(
             u_did.push(did);
             u_pds.push(pds_id);
             u_key.push(id.key.as_deref());
+            u_kem.push(id.kem.as_deref());
             u_claim.push(id.claim.as_deref());
             u_status.push(status);
             u_hs.push(handle_status);
@@ -260,6 +264,7 @@ pub async fn apply_page(
             );
             n_pds.push(pds_id);
             n_key.push(id.key.as_deref());
+            n_kem.push(id.kem.as_deref());
             n_claim.push(id.claim.as_deref());
             n_status.push(status);
             n_hs.push(handle_status);
@@ -298,24 +303,24 @@ pub async fn apply_page(
 
     if !n_did.is_empty() {
         tx.execute(
-            "INSERT INTO accounts (created_at, pds_id, method, status, handle_status, did, signing_key, handle_claim) \
-             SELECT c::timestamptz, p, $8::int2, s, hs, d, k, h \
-             FROM UNNEST($1::text[], $2::int4[], $3::int2[], $4::int2[], $5::bytea[], $6::bytea[], $7::text[]) \
-                  AS t(c, p, s, hs, d, k, h)",
-            &[&n_created, &n_pds, &n_status, &n_hs, &n_did, &n_key, &n_claim, &db::METHOD_PLC],
+            "INSERT INTO accounts (created_at, pds_id, method, status, handle_status, did, signing_key, handle_claim, kem_key) \
+             SELECT c::timestamptz, p, $8::int2, s, hs, d, k, h, e \
+             FROM UNNEST($1::text[], $2::int4[], $3::int2[], $4::int2[], $5::bytea[], $6::bytea[], $7::text[], $9::bytea[]) \
+                  AS t(c, p, s, hs, d, k, h, e)",
+            &[&n_created, &n_pds, &n_status, &n_hs, &n_did, &n_key, &n_claim, &db::METHOD_PLC, &n_kem],
         )
         .await
         .context("inserting accounts")?;
     }
     if !u_did.is_empty() {
         tx.execute(
-            "UPDATE accounts a SET pds_id = t.p, signing_key = t.k, handle_claim = t.h, status = t.s, \
+            "UPDATE accounts a SET pds_id = t.p, signing_key = t.k, handle_claim = t.h, status = t.s, kem_key = t.e, \
                  handle_status = CASE WHEN t.r THEN t.hs ELSE a.handle_status END, \
                  handle_checked_at = CASE WHEN t.r THEN NULL ELSE a.handle_checked_at END \
-             FROM UNNEST($1::bytea[], $2::int4[], $3::bytea[], $4::text[], $5::int2[], $6::int2[], $7::bool[]) \
-                  AS t(d, p, k, h, s, hs, r) \
+             FROM UNNEST($1::bytea[], $2::int4[], $3::bytea[], $4::text[], $5::int2[], $6::int2[], $7::bool[], $8::bytea[]) \
+                  AS t(d, p, k, h, s, hs, r, e) \
              WHERE a.did = t.d",
-            &[&u_did, &u_pds, &u_key, &u_claim, &u_status, &u_hs, &u_reset],
+            &[&u_did, &u_pds, &u_key, &u_claim, &u_status, &u_hs, &u_reset, &u_kem],
         )
         .await
         .context("updating accounts")?;
@@ -485,7 +490,7 @@ mod tests {
         let create = parse_line(&line(1, "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgz7soitae",
             r#"{"type":"create","prev":null,"handle":"old.example.com","service":"https://pds.example.com","signingKey":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF","recoveryKey":"did:key:zX"}"#)).unwrap();
         let update = parse_line(&line(2, "bafyreihp3mxbq5ekbpkgnr2y5ebvzqbffwzwb4wmb4lgcbsviujf2x2ns4",
-            r#"{"type":"plc_operation","prev":"bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgz7soitae","alsoKnownAs":["at://new.example.com"],"services":{"atproto_pds":{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"verificationMethods":{"atproto":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF"}}"#)).unwrap();
+            r#"{"type":"plc_operation","prev":"bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgz7soitae","alsoKnownAs":["at://new.example.com"],"services":{"atproto_pds":{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"verificationMethods":{"atproto":"did:key:zQ3shXjHeiBuRCKmM36cuYnm7YEMzhGnCmCyW92sRJ9pribSF","atproto_kem":"did:key:zDnaeTRCKLGGE7yBeq6L4t2XkGjggh2g6TYvYpkdva7RQhfF7"}}"#)).unwrap();
         let mut pds = PdsCache::default();
         apply_page(
             &mut client,
@@ -513,6 +518,22 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(claim, "new.example.com");
+        // The encryption key has its column; the parts are not kept.
+        let kem: Option<String> = client
+            .query_one("SELECT lodestar_key(kem_key) FROM accounts", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            kem.as_deref(),
+            Some("did:key:zDnaeTRCKLGGE7yBeq6L4t2XkGjggh2g6TYvYpkdva7RQhfF7")
+        );
+        let parts: i64 = client
+            .query_one("SELECT count(*) FROM doc_parts", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(parts, 0);
         let history: i64 = client
             .query_one("SELECT count(*) FROM identity_history", &[])
             .await

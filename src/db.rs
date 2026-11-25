@@ -60,8 +60,18 @@ CREATE TABLE IF NOT EXISTS accounts (
     handle_status     smallint NOT NULL,
     did               bytea PRIMARY KEY,
     signing_key       bytea,
-    handle_claim      text
+    handle_claim      text,
+    kem_key           bytea
 );
+-- The `atproto_kem` key, which PDSes give every account they host. Kept
+-- beside the signing key so such documents are rebuilt, not kept whole.
+-- Checked first: ALTER TABLE would lock the table on every start.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'accounts' AND column_name = 'kem_key') THEN
+        ALTER TABLE accounts ADD COLUMN kem_key bytea;
+    END IF;
+END $$;
 -- The verified handle to DID lookup: one holder per handle.
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_verified_handle ON accounts (handle_claim) WHERE handle_status = 0;
 
@@ -84,7 +94,7 @@ CREATE TABLE IF NOT EXISTS plc_recent_ops (
 );
 
 -- The DID document parts of the identities whose document the stored
--- claim, PDS and key cannot rebuild: labelers' second key and service,
+-- claim, PDS and keys cannot rebuild: labelers' second key and service,
 -- for example. As the directory gives them, JSON text. `seq` is the
 -- operation they came from.
 CREATE TABLE IF NOT EXISTS doc_parts (

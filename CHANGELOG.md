@@ -51,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since the provider's certificate covers one label; with no record it
   now resolves to nothing at once, instead of failing and being retried
   for a day. The first sweep met about 196,000 of them.
+- An account's `atproto_kem` key, which PDSes add to every account they
+  host, is stored beside its signing key (`accounts.kem_key`, added on
+  start without a rewrite), and its DID document is rebuilt from the
+  two. Before, each such document was kept whole in `doc_parts`, about
+  360 bytes an identity instead of about 36.
 
 ### Fixed
 

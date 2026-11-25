@@ -32,8 +32,10 @@ pub struct Op {
     pub claim: Option<String>,
     pub pds: Option<String>,
     pub key: Option<Vec<u8>>,
+    /// The `atproto_kem` key.
+    pub kem: Option<Vec<u8>>,
     /// The DID document's parts as the directory gives them, when the
-    /// claim, PDS and key cannot rebuild them exactly. None for most
+    /// claim, PDS and keys cannot rebuild them exactly. None for most
     /// operations.
     pub doc: Option<Parts>,
 }
@@ -56,15 +58,23 @@ fn storable(s: &str) -> Option<String> {
     (!s.contains('\0')).then(|| s.to_owned())
 }
 
-/// The DID document parts a stored claim, PDS and key stand for: what an
+/// The DID document parts a stored claim, PDS and keys stand for: what an
 /// identity's document shows when it has no parts of its own.
-pub fn rebuilt_parts(claim: Option<&str>, pds: Option<&str>, key: Option<&[u8]>) -> Value {
+pub fn rebuilt_parts(
+    claim: Option<&str>,
+    pds: Option<&str>,
+    key: Option<&[u8]>,
+    kem: Option<&[u8]>,
+) -> Value {
+    let mut methods = serde_json::Map::new();
+    for (id, k) in [("atproto", key), ("atproto_kem", kem)] {
+        if let Some(k) = k.and_then(encoding::key_text) {
+            methods.insert(id.to_owned(), Value::String(k));
+        }
+    }
     json!({
         "alsoKnownAs": claim.map(|c| vec![format!("at://{c}")]).unwrap_or_default(),
-        "verificationMethods": match key.and_then(encoding::key_text) {
-            Some(k) => json!({ "atproto": k }),
-            None => json!({}),
-        },
+        "verificationMethods": methods,
         "services": match pds {
             Some(p) => json!({
                 "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": p }
@@ -81,8 +91,9 @@ fn own_parts(
     claim: Option<&str>,
     pds: Option<&str>,
     key: Option<&[u8]>,
+    kem: Option<&[u8]>,
 ) -> Option<Parts> {
-    let rebuilt = rebuilt_parts(claim, pds, key);
+    let rebuilt = rebuilt_parts(claim, pds, key, kem);
     (given != rebuilt).then(|| Parts {
         names_only: given["verificationMethods"] == rebuilt["verificationMethods"]
             && given["services"] == rebuilt["services"],
@@ -125,14 +136,15 @@ type Derived = (
     Option<String>,
     Option<String>,
     Option<Vec<u8>>,
+    Option<Vec<u8>>,
     Option<Parts>,
 );
 
-/// The claim, PDS, key and document parts an operation sets.
+/// The claim, PDS, keys and document parts an operation sets.
 fn derive(op: &Value) -> Derived {
     let text = |v: Option<&Value>| v.and_then(Value::as_str).and_then(storable);
     match op.get("type").and_then(Value::as_str).unwrap_or("") {
-        "plc_tombstone" => (Kind::Tombstone, None, None, None, None),
+        "plc_tombstone" => (Kind::Tombstone, None, None, None, None, None),
         "create" => {
             let claim = op
                 .get("handle")
@@ -145,8 +157,9 @@ fn derive(op: &Value) -> Derived {
                 claim.as_deref(),
                 pds.as_deref(),
                 key.as_deref(),
+                None,
             );
-            (Kind::State, claim, pds, key, doc)
+            (Kind::State, claim, pds, key, None, doc)
         }
         "plc_operation" => {
             // The first valid at:// entry is the claim.
@@ -165,6 +178,8 @@ fn derive(op: &Value) -> Derived {
             });
             let key =
                 text(op.pointer("/verificationMethods/atproto")).map(|k| encoding::key_bytes(&k));
+            let kem = text(op.pointer("/verificationMethods/atproto_kem"))
+                .map(|k| encoding::key_bytes(&k));
             let part = |name: &str, empty: Value| op.get(name).cloned().unwrap_or(empty);
             let doc = own_parts(
                 json!({
@@ -175,10 +190,11 @@ fn derive(op: &Value) -> Derived {
                 claim.as_deref(),
                 pds.as_deref(),
                 key.as_deref(),
+                kem.as_deref(),
             );
-            (Kind::State, claim, pds, key, doc)
+            (Kind::State, claim, pds, key, kem, doc)
         }
-        _ => (Kind::Other, None, None, None, None),
+        _ => (Kind::Other, None, None, None, None, None),
     }
 }
 
@@ -206,7 +222,7 @@ pub fn parse_line(line: &str) -> Result<Op> {
     if did.contains('\0') {
         return Err(anyhow!("export line has a NUL in its did"));
     }
-    let (kind, claim, pds, key, doc) = derive(op);
+    let (kind, claim, pds, key, kem, doc) = derive(op);
     Ok(Op {
         did: did.to_owned(),
         seq,
@@ -221,6 +237,7 @@ pub fn parse_line(line: &str) -> Result<Op> {
         claim,
         pds,
         key,
+        kem,
         doc,
     })
 }
@@ -296,6 +313,17 @@ mod tests {
             r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":["at://alice.example.com"],"rotationKeys":["{key}"],"services":{{"atproto_pds":{{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}}}},"verificationMethods":{{"atproto":"{key}"}}}}"#
         );
         assert_eq!(parse_line(&line(&plain)).unwrap().doc, None);
+        // An encryption key beside the signing key: rebuilt too.
+        let kem = "did:key:zDnaeTRCKLGGE7yBeq6L4t2XkGjggh2g6TYvYpkdva7RQhfF7";
+        let spaces = format!(
+            r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":["at://alice.example.com"],"rotationKeys":["{key}"],"services":{{"atproto_pds":{{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}}}},"verificationMethods":{{"atproto":"{key}","atproto_kem":"{kem}"}}}}"#
+        );
+        let op = parse_line(&line(&spaces)).unwrap();
+        assert_eq!(op.doc, None);
+        assert_eq!(
+            encoding::key_text(op.kem.as_ref().unwrap()).as_deref(),
+            Some(kem)
+        );
         // A labeler: a second key and a second service.
         let labeler = format!(
             r#"{{"type":"plc_operation","prev":null,"alsoKnownAs":["at://mod.example.com"],"services":{{"atproto_pds":{{"type":"AtprotoPersonalDataServer","endpoint":"https://pds.example.com"}},"atproto_labeler":{{"type":"AtprotoLabeler","endpoint":"https://mod.example.com"}}}},"verificationMethods":{{"atproto":"{key}","atproto_label":"{key}"}}}}"#
